@@ -711,6 +711,19 @@ def configure_otel_metrics(config: OTelMetricsConfig | None = None) -> HeadroomO
             "OpenTelemetry SDK/exporter packages are not installed. "
             "Install headroom-ai[otel] to enable managed OTEL metric export."
         )
+        # Status describes the requested configuration, not exporter availability.
+        with _metrics_lock:
+            previous_provider = _owned_meter_provider
+            _owned_meter_provider = None
+            _owned_metrics_config = resolved
+            _global_metrics = None
+
+        if previous_provider is not None:
+            try:
+                previous_provider.shutdown()
+            except Exception:
+                logger.debug("Failed to shut down previous OTEL metrics provider", exc_info=True)
+
         return get_otel_metrics()
 
     exporter: Any
