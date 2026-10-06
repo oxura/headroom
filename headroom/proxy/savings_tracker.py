@@ -231,7 +231,7 @@ def _coerce_signed_float(value: Any, default: float = 0.0) -> float:
     """``_coerce_float`` without the zero floor, for quantities that can lose.
 
     The floor in ``_coerce_float`` is right for the things it mostly guards --
-    token counts, input costs, cumulative totals -- none of which have a
+    token counts, input costs, cache discounts -- none of which have a
     meaningful negative value. It is wrong for per-request compression savings,
     which genuinely go negative when a rewrite displaces tokens out of the
     cached prefix and they come back billed at the fresh-input rate. Flooring
@@ -653,7 +653,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     if isinstance(entry, dict):
         timestamp = _parse_timestamp(entry.get("timestamp"))
         total_tokens_saved = _coerce_int(entry.get("total_tokens_saved"))
-        compression_savings_usd = _coerce_float(entry.get("compression_savings_usd"))
+        compression_savings_usd = _coerce_signed_float(entry.get("compression_savings_usd"))
         # Older history points predate cache-savings tracking and omit these
         # keys entirely; default to 0/0.0 rather than raising or dropping the
         # entry, matching how every other field here handles legacy shapes.
@@ -664,7 +664,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         output_tokens_saved = _coerce_int(entry.get("output_tokens_saved"))
         output_savings_usd = _coerce_float(entry.get("output_savings_usd"))
         tool_tokens_saved = _coerce_int(entry.get("tool_tokens_saved"))
-        tool_schema_savings_usd = _coerce_float(entry.get("tool_schema_savings_usd"))
+        tool_schema_savings_usd = _coerce_signed_float(entry.get("tool_schema_savings_usd"))
         total_output_cost_usd = _coerce_float(entry.get("total_output_cost_usd"))
         provider = _normalize_provider(entry.get("provider"))
         model = _normalize_model(entry.get("model"))
@@ -672,7 +672,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         timestamp = _parse_timestamp(entry[0])
         total_tokens_saved = _coerce_int(entry[1])
         if len(entry) >= 3:
-            compression_savings_usd = _coerce_float(entry[2])
+            compression_savings_usd = _coerce_signed_float(entry[2])
         if len(entry) >= 4:
             total_input_tokens = _coerce_int(entry[3])
         if len(entry) >= 5:
@@ -848,7 +848,7 @@ def _normalize_display_session(entry: Any) -> dict[str, Any]:
         "savings_basis": savings_basis,
         "tool_tokens_saved": _coerce_int(entry.get("tool_tokens_saved")),
         "tool_schema_savings_usd": round(
-            _coerce_float(entry.get("tool_schema_savings_usd")),
+            _coerce_signed_float(entry.get("tool_schema_savings_usd")),
             6,
         ),
         "cache_read_tokens": _coerce_int(entry.get("cache_read_tokens")),
@@ -1166,7 +1166,7 @@ class SavingsTracker:
         # input price. Without the priced breakdown nothing was folded either,
         # so 0.0 keeps the disjoint field consistent with the sum.
         delta_tool_savings_usd = (
-            max(_coerce_float(priced.get("tool_schema")), 0.0) if priced is not None else 0.0
+            _coerce_signed_float(priced.get("tool_schema")) if priced is not None else 0.0
         )
         delta_input_cost_usd = _estimate_input_cost_usd(
             model,
@@ -1314,12 +1314,14 @@ class SavingsTracker:
             # not lossy-compressed, to keep Bedrock's prompt cache warm. Gating
             # on tokens_saved alone silently dropped every history point on
             # those requests even though real cache-read savings occurred.
-            # Append whenever any savings mechanism produced a saving.
+            # Append whenever savings changed, including losses with no saved tokens.
             if (
                 delta_tokens_saved > 0
                 or delta_cache_read_tokens > 0
                 or delta_output_tokens_saved > 0
                 or delta_tool_tokens_saved > 0
+                or delta_savings_usd != 0
+                or delta_tool_savings_usd != 0
             ):
                 self._state["history"].append(
                     {
@@ -1772,14 +1774,34 @@ class SavingsTracker:
             return self._default_state()
 
         history_raw = raw.get("history", [])
-        normalized_history = []
+        history_entries = []
         if isinstance(history_raw, list):
             for item in history_raw:
                 normalized = _normalize_history_entry(item)
                 if normalized is not None:
-                    normalized_history.append(normalized)
+                    history_entries.append((normalized, item))
 
-        normalized_history.sort(key=lambda item: item["timestamp"])
+        history_entries.sort(key=lambda pair: pair[0]["timestamp"])
+        normalized_history = []
+        previous_savings = 0.0
+        previous_tool_savings = 0.0
+        for normalized, item in history_entries:
+            # Old checkpoints can omit cumulative dollar fields. Absence is
+            # not a reset to zero: signed subtraction would invent a loss.
+            # Carry the last known value, but retain an explicit finite zero.
+            savings = (
+                item.get("compression_savings_usd")
+                if isinstance(item, dict)
+                else (item[2] if len(item) >= 3 else None)
+            )
+            tool_savings = item.get("tool_schema_savings_usd") if isinstance(item, dict) else None
+            previous_savings = round(_coerce_signed_float(savings, previous_savings), 6)
+            previous_tool_savings = round(
+                _coerce_signed_float(tool_savings, previous_tool_savings), 6
+            )
+            normalized["compression_savings_usd"] = previous_savings
+            normalized["tool_schema_savings_usd"] = previous_tool_savings
+            normalized_history.append(normalized)
 
         lifetime_raw = raw.get("lifetime", {})
         lifetime_requests = 0
@@ -1801,9 +1823,11 @@ class SavingsTracker:
         if isinstance(lifetime_raw, dict):
             lifetime_requests = _coerce_int(lifetime_raw.get("requests"))
             lifetime_tokens_saved = _coerce_int(lifetime_raw.get("tokens_saved"))
-            lifetime_savings_usd = _coerce_float(lifetime_raw.get("compression_savings_usd"))
+            lifetime_savings_usd = _coerce_signed_float(lifetime_raw.get("compression_savings_usd"))
             lifetime_tool_tokens_saved = _coerce_int(lifetime_raw.get("tool_tokens_saved"))
-            lifetime_tool_savings_usd = _coerce_float(lifetime_raw.get("tool_schema_savings_usd"))
+            lifetime_tool_savings_usd = _coerce_signed_float(
+                lifetime_raw.get("tool_schema_savings_usd")
+            )
             lifetime_cache_read_tokens = _coerce_int(lifetime_raw.get("cache_read_tokens"))
             lifetime_cache_savings_usd = _coerce_float(lifetime_raw.get("cache_savings_usd"))
             lifetime_input_tokens = _coerce_int(lifetime_raw.get("total_input_tokens"))
@@ -1811,7 +1835,7 @@ class SavingsTracker:
             migrated_at = lifetime_raw.get("savings_basis_migrated_at")
             is_v6_lifetime = "compression_savings_list_usd" in lifetime_raw
             if is_v6_lifetime:
-                lifetime_savings_list_usd = _coerce_float(
+                lifetime_savings_list_usd = _coerce_signed_float(
                     lifetime_raw.get("compression_savings_list_usd")
                 )
                 lifetime_basis = str(lifetime_raw.get("savings_basis") or BASIS_UNKNOWN)
@@ -1825,18 +1849,31 @@ class SavingsTracker:
                 lifetime_tokens_saved,
                 last["total_tokens_saved"],
             )
-            lifetime_savings_usd = max(
-                lifetime_savings_usd,
-                _coerce_float(last["compression_savings_usd"]),
+            # Before v6 these totals were monotone list-price savings, and a
+            # checkpoint could repair a stale lifetime block with max(). Modern
+            # totals are signed: a later loss may make lifetime SMALLER than its
+            # last checkpoint. Keep finite explicit totals, including zero, and
+            # recover from history only when a field is missing or invalid.
+            legacy_savings = _coerce_int(raw.get("schema_version")) < 6
+            raw_savings = lifetime_raw if isinstance(lifetime_raw, dict) else {}
+            lifetime_savings_usd = _coerce_signed_float(
+                raw_savings.get("compression_savings_usd"),
+                last["compression_savings_usd"],
             )
+            if legacy_savings:
+                lifetime_savings_usd = max(lifetime_savings_usd, last["compression_savings_usd"])
             lifetime_tool_tokens_saved = max(
                 lifetime_tool_tokens_saved,
                 _coerce_int(last.get("tool_tokens_saved")),
             )
-            lifetime_tool_savings_usd = max(
-                lifetime_tool_savings_usd,
-                _coerce_float(last.get("tool_schema_savings_usd")),
+            lifetime_tool_savings_usd = _coerce_signed_float(
+                raw_savings.get("tool_schema_savings_usd"),
+                last["tool_schema_savings_usd"],
             )
+            if legacy_savings:
+                lifetime_tool_savings_usd = max(
+                    lifetime_tool_savings_usd, last["tool_schema_savings_usd"]
+                )
             lifetime_input_tokens = max(
                 lifetime_input_tokens,
                 _coerce_int(last.get("total_input_tokens")),
@@ -2145,7 +2182,7 @@ class SavingsTracker:
             2,
         )
         session["compression_savings_usd"] = round(
-            _coerce_float(session.get("compression_savings_usd")),
+            _coerce_signed_float(session.get("compression_savings_usd")),
             6,
         )
         session["total_input_cost_usd"] = round(
@@ -2231,16 +2268,18 @@ class SavingsTracker:
 
             bucket_key = _to_utc_iso(bucket_start)
             total_tokens_saved = _coerce_int(point.get("total_tokens_saved"))
-            total_usd = _coerce_float(point.get("compression_savings_usd"))
+            total_usd = _coerce_signed_float(point.get("compression_savings_usd"), prev_total_usd)
             total_input_tokens = _coerce_int(point.get("total_input_tokens"))
             total_input_cost_usd = _coerce_float(point.get("total_input_cost_usd"))
             total_output_tokens = _coerce_int(point.get("output_tokens_saved"))
             total_output_usd = _coerce_float(point.get("output_savings_usd"))
             total_tool_tokens = _coerce_int(point.get("tool_tokens_saved"))
-            total_tool_usd = _coerce_float(point.get("tool_schema_savings_usd"))
+            total_tool_usd = _coerce_signed_float(
+                point.get("tool_schema_savings_usd"), prev_tool_usd
+            )
             total_output_cost_usd = _coerce_float(point.get("total_output_cost_usd"))
             delta_tokens = max(total_tokens_saved - prev_total_tokens, 0)
-            delta_usd = max(total_usd - prev_total_usd, 0.0)
+            delta_usd = total_usd - prev_total_usd
             delta_input_tokens = max(total_input_tokens - prev_total_input_tokens, 0)
             delta_input_cost_usd = max(
                 total_input_cost_usd - prev_total_input_cost_usd,
@@ -2250,7 +2289,7 @@ class SavingsTracker:
             delta_output_tokens = max(total_output_tokens - prev_output_tokens, 0)
             delta_output_usd = max(total_output_usd - prev_output_usd, 0.0)
             delta_tool_tokens = max(total_tool_tokens - prev_tool_tokens, 0)
-            delta_tool_usd = max(total_tool_usd - prev_tool_usd, 0.0)
+            delta_tool_usd = total_tool_usd - prev_tool_usd
             delta_output_cost_usd = max(total_output_cost_usd - prev_output_cost_usd, 0.0)
 
             total_cache_read_tokens = _coerce_int(point.get("cache_read_tokens"))
@@ -2339,6 +2378,7 @@ class SavingsTracker:
             if (
                 delta_tokens
                 or delta_usd
+                or delta_tool_usd
                 or delta_input_tokens
                 or delta_input_cost_usd
                 or delta_cache_read_tokens
