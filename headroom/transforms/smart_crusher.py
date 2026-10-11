@@ -142,7 +142,7 @@ def _build_tool_name_index(messages: list[dict[str, Any]]) -> dict[str, str]:
             tc_id = tc.get("id")
             function = tc.get("function") or {}
             name = function.get("name")
-            if tc_id and name:
+            if tc_id and isinstance(name, str) and name:
                 index[tc_id] = unwrap_tool_call_name(name, function.get("arguments"))
         content = msg.get("content")
         if isinstance(content, list):
@@ -151,7 +151,7 @@ def _build_tool_name_index(messages: list[dict[str, Any]]) -> dict[str, str]:
                     continue
                 bid = block.get("id")
                 name = block.get("name")
-                if bid and name:
+                if bid and isinstance(name, str) and name:
                     index[bid] = unwrap_tool_call_name(name, block.get("input"))
     return index
 

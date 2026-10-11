@@ -9,6 +9,7 @@ that content again → new <<ccr:hash>> marker → infinite retrieval loop.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -240,3 +241,64 @@ def test_wrapped_retrieval_is_exact_and_unrelated_wrapper_remains_compressible(w
         ordinary = result.messages[1]["content"][1]["content"]
     assert recovered == content
     assert ordinary != content
+
+
+def _messages_with_tool_name(wire, name):
+    if wire == "openai":
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": name, "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "call_1", "name": name, "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "ok"},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize("wire", ["openai", "anthropic"])
+@pytest.mark.parametrize(
+    "name",
+    [["Bash"], {"name": "Bash"}, 7, True, None, ""],
+    ids=["list", "dict", "integer", "boolean", "null", "empty"],
+)
+def test_invalid_tool_names_are_unresolved(wire, name):
+    """Both wire formats reject non-string names before shared wrapper parsing."""
+    from headroom.transforms.smart_crusher import _build_tool_name_index
+
+    messages = _messages_with_tool_name(wire, name)
+    original = deepcopy(messages)
+    assert _build_tool_name_index(messages) == {}
+    assert messages == original
+
+
+@pytest.mark.parametrize(
+    "name",
+    [["Bash"], {"name": "Bash"}, 7, True, None, ""],
+    ids=["list", "dict", "integer", "boolean", "null", "empty"],
+)
+def test_invalid_openai_tool_names_leave_small_results_unchanged(name):
+    """The real OpenAI counter reaches indexing even for malformed function names."""
+    messages = _messages_with_tool_name("openai", name)
+    original = deepcopy(messages)
+    result = _make_crusher(min_tokens=200).apply(messages, _get_tokenizer())
+
+    assert result.messages == original
+    assert messages == original
+    assert result.transforms_applied == []
+    assert result.markers_inserted == []
+    assert result.tokens_before == result.tokens_after
