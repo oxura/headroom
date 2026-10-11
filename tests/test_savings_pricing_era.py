@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 
 import pytest
 
+import headroom.proxy.savings_tracker as savings_tracker_module
 from headroom.pricing.counterfactual import BASIS_CATALOG, BASIS_LIST
 from headroom.proxy.savings_tracker import SavingsTracker
 
@@ -158,3 +159,67 @@ def test_durable_lifetime_cost_does_not_mix_unversioned_and_new_prices(tmp_path)
     assert result["cost"]["input_usd"] == pytest.approx(0.55)
     assert result["cost"]["compression_savings_usd"] == pytest.approx(0.01)
     assert result["cost"]["legacy_compression_savings_usd"] == 100.0
+
+
+@pytest.mark.parametrize("legacy_dollars", [None, (100.0, 20.0), (-100.0, -20.0)])
+@pytest.mark.parametrize("save_flush_every", [1, 3])
+def test_compression_checkpoints_preserve_priced_buckets_and_audit_on_reload(
+    tmp_path, monkeypatch, legacy_dollars, save_flush_every
+):
+    # Exercise the real no-LiteLLM fallback rather than depend on live catalogs.
+    monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", False)
+    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour -= timedelta(hours=2)
+    path = tmp_path / "savings.json"
+    legacy_compression, legacy_tool = legacy_dollars or (0.0, 0.0)
+    if legacy_dollars is not None:
+        state = _legacy_state()
+        state["schema_version"] = 6
+        state["lifetime"]["compression_savings_usd"] = legacy_compression
+        state["lifetime"]["tool_schema_savings_usd"] = legacy_tool
+        state["history"][0].update(
+            timestamp=(hour - timedelta(hours=1)).isoformat(),
+            compression_savings_usd=legacy_compression,
+            tool_schema_savings_usd=legacy_tool,
+        )
+        path.write_text(json.dumps(state), encoding="utf-8", newline="\n")
+
+    tracker = SavingsTracker(path=str(path), save_flush_every=save_flush_every)
+    assert tracker.record_compression_savings(
+        model="checkpoint-test-model", tokens_saved=1000, timestamp=hour
+    )
+    before = tracker.history_response(history_mode="full")
+    checkpoint_dollars = before["history"][-1]["compression_savings_usd"]
+    assert checkpoint_dollars > 0
+    tracker.flush()
+
+    restarted = SavingsTracker(path=str(path), save_flush_every=save_flush_every)
+    after = restarted.history_response(history_mode="full")
+    assert after["history"][-1]["compression_savings_usd"] == checkpoint_dollars
+    assert after["lifetime"]["compression_savings_usd"] == checkpoint_dollars
+    assert after["history"][-1]["legacy_compression_savings_usd"] == legacy_compression
+    assert after["history"][-1]["legacy_tool_schema_savings_usd"] == legacy_tool
+
+    restarted.record_request(
+        model="checkpoint-test-model",
+        input_tokens=1000,
+        tokens_saved=200,
+        tool_search_saved=20,
+        estimated_savings_usd={"compression": 0.007, "tool_schema": 0.002},
+        timestamp=hour + timedelta(hours=1),
+    )
+    restarted.flush()
+    final_tracker = SavingsTracker(path=str(path))
+    final = final_tracker.history_response(history_mode="full")
+    assert final["lifetime"]["compression_savings_usd"] == pytest.approx(checkpoint_dollars + 0.009)
+    assert final["history"][-1]["legacy_compression_savings_usd"] == legacy_compression
+    assert final["history"][-1]["legacy_tool_schema_savings_usd"] == legacy_tool
+    # The later request must not absorb savings from the earlier checkpoint.
+    expected = pytest.approx([checkpoint_dollars, 0.009])
+    assert [
+        row["compression_savings_usd_delta"] for row in final["series"]["hourly"][-2:]
+    ] == expected
+    rows = list(csv.DictReader(StringIO(final_tracker.export_csv(series="hourly"))))
+    assert [float(row["compression_savings_usd_delta"]) for row in rows[-2:]] == expected
+    assert float(rows[-2]["legacy_compression_savings_usd"]) == legacy_compression
+    assert float(rows[-2]["legacy_tool_schema_savings_usd"]) == legacy_tool

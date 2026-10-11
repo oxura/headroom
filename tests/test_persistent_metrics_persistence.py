@@ -55,28 +55,38 @@ def test_savings_tracker_migrates_v4_lifetime_to_v5_metrics_and_preserves_legacy
     assert lifetime["prefix_cache"]["cache_read_tokens"] == 5
     assert lifetime["cost"] == {
         "input_usd": 1.5,
-        # Migrated from a pre-cache-aware state: its one dollar figure was
-        # list-priced, so it seeds both columns and the aggregate says so.
-        "compression_savings_usd": 0.5,
+        # The old price remains auditable, not a qualified current estimate.
+        "compression_savings_usd": 0.0,
+        "pricing_basis": "cache-region-v1",
+        "legacy_compression_savings_usd": 0.5,
         "compression_savings_list_usd": 0.5,
-        "savings_basis": "list",
+        "savings_basis": "unknown",
         "cache_savings_usd": 0.2,
     }
     assert lifetime["by_model"]["other"]["input_tokens"] == 80
 
     tracker.flush()
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["schema_version"] == 6
-    # Every legacy field survives the migration untouched. Not exact equality:
-    # v6 ADDS the list-price ceiling and the basis label beside them, which is
-    # the point of the migration rather than a violation of it.
-    assert saved["lifetime"].items() >= legacy_state["lifetime"].items()
-    assert saved["lifetime"]["savings_basis"] == "list"
+    assert saved["schema_version"] == 7
+    # Usage and spend survive unchanged; unversioned savings move to audit.
+    expected_lifetime = {**legacy_state["lifetime"], "compression_savings_usd": 0.0}
+    assert saved["lifetime"].items() >= expected_lifetime.items()
+    assert saved["lifetime"]["legacy_compression_savings_usd"] == 0.5
+    assert saved["lifetime"]["pricing_basis"] == "cache-region-v1"
+    assert saved["lifetime"]["compression_savings_list_usd"] == 0.5
+    assert saved["lifetime"]["savings_basis"] == "unknown"
     assert isinstance(saved["lifetime"]["savings_basis_migrated_at"], str)
     assert saved["display_session"]["requests"] == 2
     assert saved["projects"]["keep-me"]["requests"] == 1
     assert saved["lifetime_metrics"]["models"]["other"]["input_tokens"] == 80
     assert isinstance(saved["lifetime_metrics"]["persistence"]["last_saved_at"], str)
+    assert saved["display_session"]["compression_savings_usd"] == 0.0
+    assert saved["display_session"]["legacy_compression_savings_usd"] == 0.1
+
+    restarted = SavingsTracker(path=str(path))
+    assert restarted.lifetime_response()["cost"] == lifetime["cost"]
+    assert restarted.snapshot()["lifetime"].items() >= expected_lifetime.items()
+    assert restarted.snapshot()["lifetime"]["legacy_compression_savings_usd"] == 0.5
 
 
 def test_lifetime_response_reports_stateless_mode_without_writing(tmp_path):

@@ -1036,6 +1036,9 @@ class SavingsTracker:
                     "model": _normalize_model(model),
                     "total_tokens_saved": lifetime["tokens_saved"],
                     "compression_savings_usd": lifetime["compression_savings_usd"],
+                    "pricing_basis": PRICING_BASIS,
+                    "legacy_compression_savings_usd": lifetime["legacy_compression_savings_usd"],
+                    "legacy_tool_schema_savings_usd": lifetime["legacy_tool_schema_savings_usd"],
                     "total_input_tokens": lifetime["total_input_tokens"],
                     "total_input_cost_usd": lifetime["total_input_cost_usd"],
                 }
