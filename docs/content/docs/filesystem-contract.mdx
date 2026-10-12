@@ -124,6 +124,8 @@ A few code paths deliberately use **project-local** `.headroom/` paths resolved 
 
 These **do not obey** `HEADROOM_WORKSPACE_DIR`. This is intentional: it preserves the "project memory lives in the project directory" invariant. Users who want a single centrally located memory store can pass `--memory-db-path <path>` explicitly or set the path via the plugin API.
 
+For project-routed memory, an operator-provided project-root override is a literal filesystem path. Leading or trailing spaces are significant: relative `"project"` and `" project"` name different directories and use separate stores. Relative and absolute spellings of the same directory still resolve to the same store. Formatting whitespace in client cwd headers and system-prompt metadata is trimmed at those input boundaries, not from the CLI override.
+
 ## Legacy per-resource env vars
 
 Every legacy env var continues to work with its original semantics (raw string in, raw string out — no tilde expansion, no path-separator normalization), ensuring byte-for-byte backward compatibility.

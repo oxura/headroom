@@ -114,6 +114,23 @@ def test_resolver_tier3_cli_override() -> None:
     assert display == "project-c"
 
 
+def test_resolver_cli_root_preserves_leading_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "project").mkdir()
+    (tmp_path / " project").mkdir()
+    monkeypatch.chdir(tmp_path)
+    resolver = ProjectResolver()
+
+    plain = resolver.resolve(_ctx(project_root_override="project"))
+    spaced = resolver.resolve(_ctx(project_root_override=" project"))
+
+    assert plain is not None and spaced is not None
+    assert plain[0] != spaced[0]
+    assert spaced[1] == " project"
+    assert spaced == resolver.resolve(_ctx(project_root_override=str(tmp_path / " project")))
+
+
 def test_resolver_tier4_env_block_primary_working_directory() -> None:
     r = ProjectResolver()
     prompt = (

@@ -234,7 +234,9 @@ class ProjectResolver:
         # decoding it would fold genuinely distinct directories together: a
         # real ``/work/acme%2Fapi`` would collapse onto ``/work/acme/api`` and
         # share its store. Decode at the boundary that encodes, nowhere else.
-        cwd = unquote(raw_cwd.strip()) if percent_encoded else raw_cwd.strip()
+        # Header/prompt formatting whitespace is trimmed at those boundaries;
+        # the operator's CLI override is a literal path, including its spaces.
+        cwd = unquote(raw_cwd) if percent_encoded else raw_cwd
         if not cwd:
             return None
         # Normalise so symlinked / trailing-slash variants collapse to
