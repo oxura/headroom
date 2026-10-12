@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import ntpath
 import os
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote
 
@@ -237,18 +238,19 @@ class ProjectResolver:
         cwd = unquote(raw_cwd.strip()) if percent_encoded else raw_cwd.strip()
         if not cwd:
             return None
-        # Normalise so symlinked / trailing-slash variants collapse to
-        # the same key. ``realpath`` falls back to the input when the
-        # path doesn't exist on this host, which is the right behaviour
-        # for a proxy that may run on a different machine than the
-        # client (in that case we still want a stable key per cwd
-        # string).
-        try:
-            normalised = os.path.realpath(cwd)
-        except (OSError, ValueError):
-            normalised = cwd
-        normalised = normalised.rstrip(os.sep) or os.sep
-        basename = os.path.basename(normalised) or "root"
+        if os.name != "nt" and not cwd.startswith("/") and PureWindowsPath(cwd).is_absolute():
+            # A foreign Windows cwd is a client identity, not a proxy-local
+            # filename. Resolve its spelling without consulting this host.
+            normalised = ntpath.normpath(cwd)
+            basename = ntpath.basename(normalised) or "root"
+        else:
+            # Native paths retain realpath's symlink and trailing-slash identity.
+            try:
+                normalised = os.path.realpath(cwd)
+            except (OSError, ValueError):
+                normalised = cwd
+            normalised = normalised.rstrip(os.sep) or os.sep
+            basename = os.path.basename(normalised) or "root"
         safe_basename = cls._sanitize_basename(basename) or "project"
         digest = hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
         key = f"{safe_basename}-{digest}"

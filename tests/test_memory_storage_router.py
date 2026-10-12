@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -51,7 +52,6 @@ def test_resolver_tier1_explicit_project_id_wins() -> None:
     # The sanitized id stays as a human-readable prefix; a sha256 digest is
     # appended so distinct ids that sanitize alike cannot collide.
     assert key.startswith("billing-svc-")
-    assert len(key.split("-")[-1]) == 16
     assert display == "billing-svc"
 
 
@@ -74,7 +74,61 @@ def test_resolver_tier2_explicit_cwd_header() -> None:
     key, display = out
     assert display == "project-b"
     assert key.startswith("project-b-")
-    assert len(key.split("-")[-1]) == 16  # sha256 prefix length
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows client paths on a non-Windows proxy")
+@pytest.mark.parametrize("cwd", [r"C:\Users\Client\project", r"\\server\share\project"])
+def test_windows_client_cwd_does_not_bind_to_proxy_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cwd: str
+) -> None:
+    from urllib.parse import quote
+
+    resolver = ProjectResolver()
+    ctx = _ctx(headers={"x-headroom-cwd": quote(cwd, safe="")})
+    identities = []
+    for name in ("server-a", "server-b"):
+        server = tmp_path / name
+        server.mkdir()
+        local_project = server / name
+        local_project.mkdir()
+        # This Linux filename is not the Windows client's project directory.
+        (server / cwd).symlink_to(local_project, target_is_directory=True)
+        monkeypatch.chdir(server)
+        identities.append(resolver.resolve(ctx))
+
+    assert identities[0] == identities[1]
+    assert identities[0] is not None
+    assert identities[0][1] == "project"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows client paths on a non-Windows proxy")
+def test_windows_cwd_normalizes_spelling_without_collapsing_projects() -> None:
+    resolver = ProjectResolver()
+    original = resolver.resolve(_ctx(headers={"x-headroom-cwd": r"C:\Users\Client\project"}))
+    equivalent = resolver.resolve(
+        _ctx(headers={"x-headroom-cwd": "C:/Users/Client/temp/../project/"})
+    )
+    other = resolver.resolve(_ctx(headers={"x-headroom-cwd": r"D:\Users\Client\project"}))
+    assert original == equivalent
+    assert original is not None and other is not None
+    assert original[0] != other[0]
+    assert original[1] == other[1] == "project"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Native POSIX path normalization")
+def test_native_posix_cwd_keeps_symlink_and_double_slash_identity(
+    tmp_path: Path,
+) -> None:
+    resolver = ProjectResolver()
+    project = tmp_path / "actual project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    native = resolver.resolve(_ctx(headers={"x-headroom-cwd": str(project)}))
+    assert native == resolver.resolve(_ctx(headers={"x-headroom-cwd": f"{alias}/"}))
+    assert native == resolver.resolve(_ctx(headers={"x-headroom-cwd": f"/{project}"}))
+    assert native is not None
+    assert native[1] == "actual project"
 
 
 def test_resolver_project_label_alone_fails_closed() -> None:

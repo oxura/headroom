@@ -175,6 +175,21 @@ This gives you an audit trail, the ability to debug why the LLM made certain dec
 
 ## Backends
 
+### Windows client projects on a non-Windows proxy
+
+Absolute drive-qualified paths such as `C:\Users\Client\project` and backslash
+UNC paths such as `\\server\share\project` are normalized lexically when the
+proxy is not running on Windows. Their project identity does not depend on the
+proxy's working directory or similarly named files on its filesystem. Header
+values are percent-decoded first; equivalent separators, `.`/`..` segments and
+trailing separators share an identity.
+
+Native paths still use filesystem normalization, so local symlink aliases share
+their project store. Previously created stores under proxy-dependent Windows
+keys are not automatically merged or moved; preserve those databases when
+recovering their records.
+
+
 ### Embedder Backends
 
 ```python
