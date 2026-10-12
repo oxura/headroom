@@ -44,6 +44,23 @@ The `with_memory()` wrapper intercepts every chat completion call:
 
 Memory extraction happens **inline** as part of the LLM response. No extra API calls, no extra latency.
 
+## Proxy Project Identity
+
+For project-scoped proxy memory, project signals are tried in this order:
+
+1. An explicit `x-headroom-project-id`.
+2. An absolute `x-headroom-cwd` (percent-decoded at the header boundary).
+3. The operator-configured project root.
+4. An absolute working directory from the client's environment prompt.
+
+Client cwd metadata must be fully absolute: POSIX paths, drive-qualified Windows
+paths and complete Windows UNC paths are accepted. Relative client values such
+as `./project`, `C:project` or `\project` are ignored rather than resolved against
+the proxy's filesystem, so they cannot hide a valid lower-priority project.
+Operator-configured roots may still be relative to the proxy's own directory.
+If no signal resolves, the configured unresolved-project policy applies
+(fail-closed by default).
+
 ## Hierarchical Scoping
 
 Memories exist at four scope levels, from broadest to narrowest:

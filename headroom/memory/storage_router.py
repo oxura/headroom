@@ -31,7 +31,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote
 
@@ -170,10 +170,12 @@ class ProjectResolver:
                 digest = hashlib.sha256(explicit.encode("utf-8")).hexdigest()[:16]
                 return f"{safe}-{digest}", explicit
 
-        # Tier 2: client-provided explicit cwd (any client).
+        # Tier 2: client-provided absolute cwd (any client).
         explicit_cwd = self._first_nonempty_header(ctx.headers, "x-headroom-cwd")
         if explicit_cwd:
-            ident = self._identity_from_cwd(explicit_cwd, percent_encoded=True)
+            ident = self._identity_from_cwd(
+                explicit_cwd, percent_encoded=True, require_absolute=True
+            )
             if ident is not None:
                 return ident
 
@@ -186,7 +188,7 @@ class ProjectResolver:
         # Tier 4: parse the system prompt for a ``<env>`` cwd line.
         sys_cwd = self._extract_cwd_from_system_prompt(ctx.system_prompt)
         if sys_cwd:
-            ident = self._identity_from_cwd(sys_cwd)
+            ident = self._identity_from_cwd(sys_cwd, require_absolute=True)
             if ident is not None:
                 return ident
 
@@ -224,7 +226,7 @@ class ProjectResolver:
 
     @classmethod
     def _identity_from_cwd(
-        cls, raw_cwd: str, *, percent_encoded: bool = False
+        cls, raw_cwd: str, *, percent_encoded: bool = False, require_absolute: bool = False
     ) -> tuple[str, str] | None:
         # ``percent_encoded`` is set only for the ``x-headroom-cwd`` header,
         # which the wrapper percent-encodes so non-ASCII paths stay valid HTTP
@@ -237,12 +239,11 @@ class ProjectResolver:
         cwd = unquote(raw_cwd.strip()) if percent_encoded else raw_cwd.strip()
         if not cwd:
             return None
-        # Normalise so symlinked / trailing-slash variants collapse to
-        # the same key. ``realpath`` falls back to the input when the
-        # path doesn't exist on this host, which is the right behaviour
-        # for a proxy that may run on a different machine than the
-        # client (in that case we still want a stable key per cwd
-        # string).
+        # Client-relative paths belong to the client's filesystem, not this
+        # proxy's cwd. Operator CLI overrides can still be relative locally.
+        if require_absolute and not (cwd.startswith("/") or PureWindowsPath(cwd).is_absolute()):
+            return None
+        # Native normalization keeps symlink and trailing-slash aliases together.
         try:
             normalised = os.path.realpath(cwd)
         except (OSError, ValueError):

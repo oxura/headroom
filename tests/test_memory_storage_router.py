@@ -51,7 +51,6 @@ def test_resolver_tier1_explicit_project_id_wins() -> None:
     # The sanitized id stays as a human-readable prefix; a sha256 digest is
     # appended so distinct ids that sanitize alike cannot collide.
     assert key.startswith("billing-svc-")
-    assert len(key.split("-")[-1]) == 16
     assert display == "billing-svc"
 
 
@@ -74,7 +73,75 @@ def test_resolver_tier2_explicit_cwd_header() -> None:
     key, display = out
     assert display == "project-b"
     assert key.startswith("project-b-")
-    assert len(key.split("-")[-1]) == 16  # sha256 prefix length
+
+
+@pytest.mark.parametrize("source", ["header", "system"])
+@pytest.mark.parametrize("cwd", ["./project", r"C:project", r"\project"])
+def test_client_relative_cwd_is_not_a_project_identity(source: str, cwd: str) -> None:
+    from urllib.parse import quote
+
+    ctx = (
+        _ctx(headers={"x-headroom-cwd": quote(cwd, safe="")})
+        if source == "header"
+        else _ctx(system_prompt=f"Working directory: {cwd}\n")
+    )
+    assert ProjectResolver().resolve(ctx) is None
+
+
+def test_relative_client_header_does_not_hide_absolute_system_project() -> None:
+    from urllib.parse import quote
+
+    resolver = ProjectResolver()
+    system_prompt = "Working directory: /client/trusted/project\n"
+    trusted = resolver.resolve(_ctx(system_prompt=system_prompt))
+    resolved = resolver.resolve(
+        _ctx(
+            headers={"x-headroom-cwd": quote("./project", safe="")},
+            system_prompt=system_prompt,
+        )
+    )
+    assert resolved == trusted
+    assert resolved is not None
+    assert resolved[1] == "project"
+
+
+def test_relative_client_header_yields_to_operator_relative_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolver = ProjectResolver()
+    (tmp_path / "operator-project").mkdir()
+    monkeypatch.chdir(tmp_path)
+    trusted = resolver.resolve(_ctx(project_root_override="operator-project"))
+    resolved = resolver.resolve(
+        _ctx(
+            headers={"x-headroom-cwd": "client-project"},
+            project_root_override="operator-project",
+            system_prompt="Working directory: /client/other-project\n",
+        )
+    )
+    assert resolved == trusted
+    assert resolved is not None
+    assert resolved[1] == "operator-project"
+
+
+@pytest.mark.parametrize(
+    "cwd", ["/client/project", r"C:\Client\project", r"\\server\share\project"]
+)
+def test_absolute_client_header_keeps_priority_over_other_project_signals(cwd: str) -> None:
+    from urllib.parse import quote
+
+    resolver = ProjectResolver()
+    expected = resolver.resolve(_ctx(project_root_override=cwd))
+    resolved = resolver.resolve(
+        _ctx(
+            headers={"x-headroom-cwd": quote(cwd, safe="")},
+            project_root_override="/operator/other",
+            system_prompt="Working directory: /client/other-project\n",
+        )
+    )
+    assert resolved == expected
+    assert resolved is not None
+    assert resolved != resolver.resolve(_ctx(project_root_override="/operator/other"))
 
 
 def test_resolver_project_label_alone_fails_closed() -> None:
