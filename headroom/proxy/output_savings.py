@@ -750,8 +750,11 @@ class SavingsRecorder:
         negative ``tokens_saved`` with an "artifact" log for the same reason.
         Keeping the floor here makes that boundary explicit rather than
         relying on every downstream caller to reapply it."""
-        for label in labels or ():
-            parsed = parse_stratum_label(str(label))
+        label_strings = tuple(str(label) for label in labels or ())
+        if not any(label.startswith(_SHAPED_LABEL_PREFIX) for label in label_strings):
+            return 0
+        for label in label_strings:
+            parsed = parse_stratum_label(label)
             if parsed is None:
                 continue
             arm, key = parsed

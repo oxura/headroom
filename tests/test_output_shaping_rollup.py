@@ -70,8 +70,29 @@ def test_estimate_request_savings_treatment_uses_baseline(tmp_path):
         rec._ledger.baseline.observe(key, 1000)  # baseline mean ~1000
 
     # Treatment request that emitted 600 -> saved ~400 vs the baseline.
-    saved = rec.estimate_request_savings([stratum_label("treatment", key)], 600)
+    saved = rec.estimate_request_savings(
+        [stratum_label("treatment", key), "output_shaper:verbosity:2"], 600
+    )
     assert saved == 400
+
+
+def test_estimate_request_savings_requires_applied_shaping(tmp_path):
+    rec = SavingsRecorder(str(tmp_path / "o.json"), flush_every=1)
+    key = _key()
+    rec._ledger.baseline.observe(key, 1000)
+    labels = [stratum_label("treatment", key)]
+
+    assert not rec.record_from_labels(labels, 600)
+    assert rec.estimate_request_savings(labels, 600) == 0
+
+
+def test_estimate_request_savings_accepts_one_pass_labels(tmp_path):
+    rec = SavingsRecorder(str(tmp_path / "o.json"), flush_every=1)
+    key = _key()
+    rec._ledger.baseline.observe(key, 1000)
+    labels = iter(["output_shaper:verbosity:2", stratum_label("treatment", key)])
+
+    assert rec.estimate_request_savings(labels, 600) == 400
 
 
 def test_estimate_request_savings_zero_for_control_and_unknown(tmp_path):
@@ -85,4 +106,9 @@ def test_estimate_request_savings_zero_for_control_and_unknown(tmp_path):
     # No shaping label at all.
     assert rec.estimate_request_savings(["something-else"], 600) == 0
     # Treatment but output exceeded the baseline -> clamped to 0, never negative.
-    assert rec.estimate_request_savings([stratum_label("treatment", key)], 5000) == 0
+    assert (
+        rec.estimate_request_savings(
+            [stratum_label("treatment", key), "output_shaper:verbosity:2"], 5000
+        )
+        == 0
+    )
