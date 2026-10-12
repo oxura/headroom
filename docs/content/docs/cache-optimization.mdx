@@ -82,6 +82,15 @@ longer TTL cannot revive their frozen state. Cleanup and recreation retain the
 live lineage index, keeping sibling conversations and tool profiles isolated.
 Retaining a tracker is not a guarantee that the provider still has its cache.
 
+Claude Code can replace a trailing system reminder or discard a user-role side
+request, such as an idle recap, before its next real turn. When no stricter
+lineage match exists, Headroom reuses a unique longest Anthropic lineage only
+if all history before that tail is unchanged, the tool/model affinity matches,
+and the new request is longer. Same-length or ambiguous sibling histories stay
+separate. Replay retains the unchanged compressed prefix, not the replaced
+request or its discarded recap reply; the current request's new tail is kept.
+`HEADROOM_TRANSIENT_SYSTEM_LINEAGE=0` disables both system- and user-tail recovery.
+
 
 ## Cold-prefix recompaction (when the cache lapses)
 

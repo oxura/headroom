@@ -1086,6 +1086,88 @@ class TestConversationLineageResolution:
         assert replayed[:3] == forwarded[:3]
         assert replayed[3:] == processed[3:]
 
+    @staticmethod
+    def _recap_turns() -> tuple[list[dict], list[dict]]:
+        previous, _ = TestConversationLineageResolution._reminder_turns()
+        history = [
+            *previous[:-1],
+            {"role": "assistant", "content": "The file is loaded."},
+        ]
+        previous = [
+            *history,
+            {"role": "user", "content": "Briefly recap our work while I am away."},
+        ]
+        current = [
+            *history,
+            {"role": "user", "content": "Now update example.py."},
+            {"role": "system", "content": "Follow the project instructions."},
+        ]
+        return previous, current
+
+    def test_replaced_user_tail_keeps_confirmed_tracker_and_prefix(self, store):
+        previous, current = self._recap_turns()
+        forwarded = [
+            *previous[:2],
+            {
+                **previous[2],
+                "content": [{**previous[2]["content"][0], "content": "cached compressed file"}],
+            },
+            *previous[3:],
+        ]
+        reply = {"role": "assistant", "content": "A recap that is not kept in history."}
+        recorded = [*previous, reply]
+        replay = [*forwarded, reply]
+        tracker = store.resolve_tracker("sid", "anthropic", previous, cache_affinity="a")
+        tracker.update_from_response(
+            cache_read_tokens=0,
+            cache_write_tokens=1_000_000,
+            messages=replay,
+            original_messages=recorded,
+            message_token_counts=[100] * len(recorded),
+        )
+        frozen = tracker.get_frozen_message_count()
+        assert frozen > 0
+
+        assert store.resolve_tracker("sid", "anthropic", current, cache_affinity="a") is tracker
+        assert tracker.get_frozen_message_count() == frozen
+        replayed = overlay_cached_prefix(
+            current, current, recorded, replay, confirmed_frozen_count=frozen
+        )
+        assert replayed[:4] == forwarded[:4]
+        assert replayed[4:] == current[4:]
+
+    @pytest.mark.parametrize("record_reply", [False, True])
+    def test_user_tail_delta_omits_discarded_recap_and_reply(self, record_reply):
+        previous, current = self._recap_turns()
+        recorded = [
+            *previous,
+            *(
+                [{"role": "assistant", "content": "The discarded recap answer."}]
+                if record_reply
+                else []
+            ),
+        ]
+        forwarded = [
+            *recorded[:2],
+            {
+                **recorded[2],
+                "content": [{**recorded[2]["content"][0], "content": "cached file"}],
+            },
+            *recorded[3:],
+        ]
+        split = extract_cache_stable_delta(current, recorded, forwarded)
+        assert split == (forwarded[:4], current[4:])
+
+    def test_user_tail_siblings_remain_separate_and_ambiguous(self, store):
+        previous, current = self._recap_turns()
+        sibling = [*previous[:-1], {"role": "user", "content": "A different side question."}]
+        first = store.resolve_tracker("sid", "anthropic", previous)
+        second = store.resolve_tracker("sid", "anthropic", sibling)
+        assert second is not first
+        assert store.resolve_tracker("sid", "anthropic", current) not in (first, second)
+        assert store.resolve_tracker("sid", "anthropic", previous) is first
+        assert store.resolve_tracker("sid", "anthropic", sibling) is second
+
     def test_moving_system_tail_records_full_snapshots(self, store):
         """The reminder moves and changes every turn; each turn stays on one
         tracker and the store records the full current history."""
