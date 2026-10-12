@@ -4082,6 +4082,8 @@ def inject_tool_search_deferral(
     ``cache_control`` — if the client's tools cache breakpoint sat on a now-deferred
     tool, it is moved to the last non-deferred real tool so the (smaller) tools
     prefix still caches.
+    Input tool dictionaries remain unchanged, including when a cache
+    breakpoint is relocated.
     """
     if core_tools is None:
         core_tools = resolved_core_tools()
@@ -4098,7 +4100,7 @@ def inject_tool_search_deferral(
     deferred = 0
     dropped_cache_control = False
     dropped_marker: dict[str, Any] | None = None
-    last_resident_real: dict[str, Any] | None = None
+    last_resident_real_index: int | None = None
     resident_has_cache_control = False
 
     # Clients disagree on casing and leading namespace markers for the same tool:
@@ -4117,7 +4119,7 @@ def inject_tool_search_deferral(
             # tools stay resident and unchanged.
             out.append(tool)
             if isinstance(tool, dict) and not tool.get("type"):
-                last_resident_real = tool
+                last_resident_real_index = len(out) - 1
                 resident_has_cache_control = resident_has_cache_control or bool(
                     tool.get("cache_control")
                 )
@@ -4139,10 +4141,16 @@ def inject_tool_search_deferral(
     # Preserve a tools cache breakpoint: if we stripped cache_control off a
     # deferred tool and no resident tool carries one, move it to the last
     # resident real tool (never the search tool, to keep its shape canonical).
-    if dropped_cache_control and not resident_has_cache_control and last_resident_real is not None:
-        last_resident_real["cache_control"] = (
+    if (
+        dropped_cache_control
+        and not resident_has_cache_control
+        and last_resident_real_index is not None
+    ):
+        resident = dict(out[last_resident_real_index])
+        resident["cache_control"] = (
             dict(dropped_marker) if dropped_marker else {"type": "ephemeral"}
         )
+        out[last_resident_real_index] = resident
     return out
 
 

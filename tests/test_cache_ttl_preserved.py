@@ -9,6 +9,7 @@ and costs a full prefix re-write on every gap past 5 minutes, so it needs a test
 rather than a comment.
 """
 
+from copy import deepcopy
 from typing import Any
 
 from headroom.proxy.helpers import inject_tool_search_deferral
@@ -34,8 +35,17 @@ def _tool_markers(tools: Any) -> list[dict[str, Any]]:
 
 def test_tool_search_deferral_keeps_ttl() -> None:
     out = inject_tool_search_deferral(_tools(TTL_1H))
-    assert out is not _tools(TTL_1H), "deferral did not apply — fixture no longer triggers it"
     assert _tool_markers(out) == [TTL_1H], "tools breakpoint lost the 1h ttl"
+
+
+def test_tool_search_deferral_relocation_preserves_input() -> None:
+    tools = _tools(TTL_1H)
+    before = deepcopy(tools)
+
+    out = inject_tool_search_deferral(tools, core_tools=frozenset({"read"}))
+
+    assert out[1]["cache_control"] == TTL_1H
+    assert tools == before
 
 
 def test_tool_search_deferral_defaults_to_5m() -> None:
