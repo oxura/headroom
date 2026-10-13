@@ -8,11 +8,15 @@ These tests verify that:
 5. Error cases and edge cases are handled gracefully
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from headroom.cache import compression_store as compression_store_module
+from headroom.cache.compression_store import CompressionStore, set_request_compression_store
+from headroom.ccr import batch_store as batch_store_module
 from headroom.ccr.batch_processor import (
     BatchResultProcessor,
     BatchResultProcessorConfig,
@@ -607,43 +611,78 @@ class TestContinuationCalls:
         reset_batch_context_store()
 
     @pytest.mark.asyncio
-    async def test_anthropic_continuation_call(self):
-        """Test Anthropic continuation call format."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"content": [{"type": "text", "text": "Final answer"}]}
-        mock_response.raise_for_status = MagicMock()
-
-        http_client = AsyncMock(spec=httpx.AsyncClient)
-        http_client.post.return_value = mock_response
-
-        processor = BatchResultProcessor(http_client)
-
-        request_context = BatchRequestContext(
-            custom_id="req_1",
-            messages=[{"role": "user", "content": "Hello"}],
-            model="claude-3-opus-20240229",
-            extras={"max_tokens": 1000},
-        )
-        batch_context = BatchContext(
-            batch_id="batch_123",
-            provider="anthropic",
-            api_key="test_api_key",
-        )
-
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Tool result here"},
+    async def test_anthropic_batch_retains_system_policy_after_retrieval(self, monkeypatch):
+        store = CompressionStore(enable_feedback=False)
+        original = json.dumps({"subtotal": 100})
+        hash_key = store.store(original, "{}", original_item_count=1)
+        previous_store = compression_store_module._request_ccr_store.get()
+        set_request_compression_store(store)
+        batch_store = BatchContextStore()
+        monkeypatch.setattr(batch_store_module, "_batch_context_store", batch_store)
+        system = [
+            {
+                "type": "text",
+                "text": "Apply the invoice policy.",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": "Add VAT at 20 percent to the recovered subtotal."},
         ]
+        context = BatchContext(batch_id="system-policy", provider="anthropic")
+        context.add_request(
+            BatchRequestContext(
+                custom_id="request",
+                messages=[{"role": "user", "content": "Calculate the total"}],
+                model="claude-sonnet-4-20250514",
+                extras={"max_tokens": 1000, "system": system},
+            )
+        )
+        await batch_store.store(context)
 
-        await processor._anthropic_continuation(messages, None, request_context, batch_context)
+        def calculate_invoice(request):
+            body = json.loads(request.content)
+            retrieval = json.loads(body["messages"][-1]["content"][0]["content"])
+            subtotal = json.loads(retrieval["original_content"])["subtotal"]
+            instructions = body.get("system", [])
+            tax_policy = any("VAT at 20 percent" in part.get("text", "") for part in instructions)
+            total = subtotal + subtotal // 5 if tax_policy else subtotal
+            return httpx.Response(
+                200,
+                json={
+                    "content": [{"type": "text", "text": json.dumps({"total": total})}],
+                    "stop_reason": "end_turn",
+                },
+            )
 
-        # Verify API call
-        http_client.post.assert_called_once()
-        call_args = http_client.post.call_args
-
-        assert "api.anthropic.com" in call_args.args[0]
-        assert call_args.kwargs["headers"]["x-api-key"] == "test_api_key"
-        assert call_args.kwargs["json"]["model"] == "claude-3-opus-20240229"
+        response = {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "retrieval",
+                    "name": CCR_TOOL_NAME,
+                    "input": {"hash": hash_key},
+                }
+            ],
+            "stop_reason": "tool_use",
+        }
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(calculate_invoice)
+            ) as client:
+                processor = BatchResultProcessor(client)
+                processed = await processor.process_results(
+                    "system-policy",
+                    [
+                        {
+                            "custom_id": "request",
+                            "result": {"type": "succeeded", "message": response},
+                        }
+                    ],
+                    "anthropic",
+                )
+            answer = processed[0].result["result"]["message"]["content"][0]["text"]
+            assert json.loads(answer) == {"total": 120}
+        finally:
+            set_request_compression_store(previous_store)
 
     @pytest.mark.asyncio
     async def test_openai_continuation_call(self):

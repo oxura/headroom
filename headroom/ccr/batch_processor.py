@@ -314,7 +314,7 @@ class BatchResultProcessor:
         request_context: BatchRequestContext,
         batch_context: BatchContext,
     ) -> dict[str, Any]:
-        """Make Anthropic continuation call."""
+        """Make an Anthropic continuation retaining the captured system policy."""
         url = f"{self.api_urls['anthropic']}/v1/messages"
 
         headers = {
@@ -329,6 +329,9 @@ class BatchResultProcessor:
             "messages": messages,
             "max_tokens": request_context.extras.get("max_tokens", 4096),
         }
+        system = request_context.extras.get("system")
+        if system is not None:
+            body["system"] = system
         if tools:
 
             def _tool_sort_key(tool: dict[str, Any]) -> tuple[str, str]:
