@@ -8,15 +8,18 @@ These tests verify that:
 5. Error cases and edge cases are handled gracefully
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from headroom.cache import compression_store as compression_store_module
+from headroom.cache.compression_store import CompressionStore, set_request_compression_store
+from headroom.ccr import batch_store as batch_store_module
 from headroom.ccr.batch_processor import (
     BatchResultProcessor,
     BatchResultProcessorConfig,
-    ProcessedBatchResult,
     process_batch_results,
 )
 from headroom.ccr.batch_store import (
@@ -50,45 +53,6 @@ class TestBatchResultProcessorConfig:
         assert config.enabled is False
         assert config.continuation_timeout == 60
         assert config.max_continuation_rounds == 5
-
-
-class TestProcessedBatchResult:
-    """Test ProcessedBatchResult dataclass."""
-
-    def test_default_values(self):
-        """Default values for ProcessedBatchResult."""
-        result = ProcessedBatchResult(
-            custom_id="req_123",
-            result={"content": "test"},
-        )
-
-        assert result.custom_id == "req_123"
-        assert result.result == {"content": "test"}
-        assert result.was_processed is False
-        assert result.continuation_rounds == 0
-        assert result.error is None
-
-    def test_processed_result(self):
-        """ProcessedBatchResult with CCR processing."""
-        result = ProcessedBatchResult(
-            custom_id="req_456",
-            result={"content": "processed"},
-            was_processed=True,
-            continuation_rounds=2,
-        )
-
-        assert result.was_processed is True
-        assert result.continuation_rounds == 2
-
-    def test_error_result(self):
-        """ProcessedBatchResult with error."""
-        result = ProcessedBatchResult(
-            custom_id="req_789",
-            result={"content": "partial"},
-            error="Retrieval failed",
-        )
-
-        assert result.error == "Retrieval failed"
 
 
 class TestBatchResultProcessorInit:
@@ -805,64 +769,66 @@ class TestProcessSingleResult:
         reset_batch_context_store()
 
     @pytest.mark.asyncio
-    async def test_process_single_result_with_ccr(self):
-        """Process a single result containing CCR tool call."""
-        # Mock the CCR handler to simulate CCR processing
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "content": [{"type": "text", "text": "Final processed answer"}]
-        }
-        mock_response.raise_for_status = MagicMock()
+    async def test_rounds_count_api_attempts_per_result_not_retrieval_calls(self, monkeypatch):
+        store = CompressionStore(enable_feedback=False)
+        hashes = [
+            store.store(json.dumps({"record": name}), "{}", original_item_count=1)
+            for name in ("a", "b")
+        ]
+        previous_store = compression_store_module._request_ccr_store.get()
+        set_request_compression_store(store)
+        batch_store = BatchContextStore()
+        monkeypatch.setattr(batch_store_module, "_batch_context_store", batch_store)
+        context = BatchContext(batch_id="round-accounting", provider="openai")
+        results = []
 
-        http_client = AsyncMock(spec=httpx.AsyncClient)
-        http_client.post.return_value = mock_response
+        def retrieval(hash_key, call_id):
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": CCR_TOOL_NAME, "arguments": json.dumps({"hash": hash_key})},
+            }
 
-        processor = BatchResultProcessor(http_client)
-
-        # Mock the CCR handler's handle_response
-        processor.ccr_handler.handle_response = AsyncMock(
-            return_value={"content": [{"type": "text", "text": "Final processed answer"}]}
-        )
-
-        original_result = {
-            "custom_id": "req_1",
-            "result": {
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "tool_123",
-                            "name": CCR_TOOL_NAME,
-                            "input": {"hash": "abc123"},
-                        }
-                    ]
+        for name in ("parallel", "single", "chain"):
+            context.add_request(
+                BatchRequestContext(
+                    custom_id=name,
+                    messages=[{"role": "user", "content": name}],
+                    model="gpt-4o-mini",
+                )
+            )
+            calls = [retrieval(hashes[0], name + "-a")]
+            if name == "parallel":
+                calls.append(retrieval(hashes[1], name + "-b"))
+            results.append(
+                {
+                    "custom_id": name,
+                    "response": {"body": {"choices": [{"message": {"tool_calls": calls}}]}},
                 }
-            },
-        }
-        response = original_result["result"]["message"]
+            )
+        await batch_store.store(context)
+        attempts = {"parallel": 0, "single": 0, "chain": 0}
 
-        request_context = BatchRequestContext(
-            custom_id="req_1",
-            messages=[{"role": "user", "content": "Get data"}],
-            tools=[{"name": CCR_TOOL_NAME}],
-            model="claude-3-opus",
-        )
-        batch_context = BatchContext(
-            batch_id="batch_123",
-            provider="anthropic",
-            api_key="test_key",
-        )
+        def continue_conversation(request):
+            body = json.loads(request.content)
+            name = body["messages"][0]["content"]
+            attempts[name] += 1
+            if name == "chain" and attempts[name] == 1:
+                message = {"tool_calls": [retrieval(hashes[1], "chain-b")]}
+            else:
+                message = {"content": "complete"}
+            return httpx.Response(200, json={"choices": [{"message": message}]})
 
-        processed = await processor._process_single_result(
-            original_result,
-            response,
-            request_context,
-            batch_context,
-            "anthropic",
-        )
-
-        assert processed.custom_id == "req_1"
-        assert processed.was_processed is True
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(continue_conversation)
+            ) as client:
+                processor = BatchResultProcessor(client)
+                processed = await processor.process_results("round-accounting", results, "openai")
+            assert [result.continuation_rounds for result in processed] == [1, 1, 2]
+            assert attempts == {"parallel": 1, "single": 1, "chain": 2}
+        finally:
+            set_request_compression_store(previous_store)
 
 
 class TestConvenienceFunction:

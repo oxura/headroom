@@ -55,7 +55,7 @@ class ProcessedBatchResult:
     custom_id: str
     result: dict[str, Any]
     was_processed: bool = False  # True if CCR tool calls were handled
-    continuation_rounds: int = 0
+    continuation_rounds: int = 0  # Continuation API attempts for this result
     error: str | None = None
 
 
@@ -239,12 +239,15 @@ class BatchResultProcessor:
             Processed result with complete response.
         """
         custom_id = request_context.custom_id
+        continuation_rounds = 0
 
         # Create API call function for continuations
         async def api_call_fn(
             messages: list[dict[str, Any]],
             tools: list[dict[str, Any]] | None,
         ) -> dict[str, Any]:
+            nonlocal continuation_rounds
+            continuation_rounds += 1
             return await self._make_continuation_call(
                 messages,
                 tools,
@@ -273,7 +276,7 @@ class BatchResultProcessor:
             custom_id=custom_id,
             result=updated_result,
             was_processed=True,
-            continuation_rounds=self.ccr_handler._retrieval_count,
+            continuation_rounds=continuation_rounds,
         )
 
     async def _make_continuation_call(
