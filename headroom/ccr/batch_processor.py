@@ -113,7 +113,7 @@ class BatchResultProcessor:
 
         Args:
             batch_id: The batch ID (to look up context).
-            results: Raw batch results from the provider.
+            results: Raw provider results, left unchanged by CCR response updates.
             provider: The provider type.
 
         Returns:
@@ -501,21 +501,19 @@ class BatchResultProcessor:
         final_response: dict[str, Any],
         provider: str,
     ) -> dict[str, Any]:
-        """Update a batch result with the final processed response."""
+        """Return the final processed response without overwriting the raw input."""
         result = dict(original_result)
 
         if provider == "anthropic":
             # Update result.result.message
-            if "result" not in result:
-                result["result"] = {}
+            result["result"] = dict(result.get("result", {}))
             result["result"]["message"] = final_response
             # Update type if it was tool_use
             result["result"]["type"] = "succeeded"
 
         elif provider == "openai":
             # Update response.body
-            if "response" not in result:
-                result["response"] = {}
+            result["response"] = dict(result.get("response", {}))
             result["response"]["body"] = final_response
 
         elif provider == "google":

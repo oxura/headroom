@@ -8,11 +8,15 @@ These tests verify that:
 5. Error cases and edge cases are handled gracefully
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from headroom.cache import compression_store as compression_store_module
+from headroom.cache.compression_store import CompressionStore, set_request_compression_store
+from headroom.ccr import batch_store as batch_store_module
 from headroom.ccr.batch_processor import (
     BatchResultProcessor,
     BatchResultProcessorConfig,
@@ -335,82 +339,6 @@ class TestCCRToolCallDetectionInBatch:
         assert not processor.ccr_handler.has_ccr_tool_calls(response, "anthropic")
 
 
-class TestResultUpdate:
-    """Test _update_result method for different providers."""
-
-    @pytest.fixture
-    def processor(self):
-        """Create a processor instance."""
-        http_client = MagicMock(spec=httpx.AsyncClient)
-        return BatchResultProcessor(http_client)
-
-    def test_update_anthropic_result(self, processor):
-        """Update Anthropic batch result with final response."""
-        original = {
-            "custom_id": "req_1",
-            "result": {
-                "type": "tool_use",
-                "message": {"content": [{"type": "tool_use", "name": CCR_TOOL_NAME}]},
-            },
-        }
-        final_response = {
-            "content": [{"type": "text", "text": "Final answer"}],
-            "stop_reason": "end_turn",
-        }
-
-        updated = processor._update_result(original, final_response, "anthropic")
-
-        assert updated["result"]["message"] == final_response
-        assert updated["result"]["type"] == "succeeded"
-        assert updated["custom_id"] == "req_1"
-
-    def test_update_openai_result(self, processor):
-        """Update OpenAI batch result with final response."""
-        original = {
-            "custom_id": "req_2",
-            "response": {
-                "status_code": 200,
-                "body": {
-                    "choices": [
-                        {"message": {"tool_calls": [{"function": {"name": CCR_TOOL_NAME}}]}}
-                    ]
-                },
-            },
-        }
-        final_response = {"choices": [{"message": {"content": "Final answer"}}]}
-
-        updated = processor._update_result(original, final_response, "openai")
-
-        assert updated["response"]["body"] == final_response
-        assert updated["custom_id"] == "req_2"
-
-    def test_update_google_result(self, processor):
-        """Update Google batch result with final response."""
-        original = {
-            "metadata": {"key": "req_3"},
-            "response": {
-                "candidates": [{"content": {"parts": [{"functionCall": {"name": CCR_TOOL_NAME}}]}}]
-            },
-        }
-        final_response = {"candidates": [{"content": {"parts": [{"text": "Final answer"}]}}]}
-
-        updated = processor._update_result(original, final_response, "google")
-
-        assert updated["response"] == final_response
-
-    def test_update_creates_missing_containers(self, processor):
-        """Update creates missing result/response containers."""
-        original_anthropic = {"custom_id": "req_1"}
-        original_openai = {"custom_id": "req_2"}
-        final = {"content": "test"}
-
-        updated_anthropic = processor._update_result(original_anthropic, final, "anthropic")
-        updated_openai = processor._update_result(original_openai, final, "openai")
-
-        assert "result" in updated_anthropic
-        assert "response" in updated_openai
-
-
 class TestMessagesToGoogleContents:
     """Test _messages_to_google_contents conversion."""
 
@@ -594,6 +522,97 @@ class TestProcessResults:
             assert len(processed) == 1
             assert processed[0].custom_id == "unknown_req"
             assert processed[0].was_processed is False
+
+    @pytest.mark.parametrize("provider", ["anthropic", "openai"])
+    @pytest.mark.asyncio
+    async def test_raw_result_can_be_reprocessed_after_ccr_continuation(
+        self, monkeypatch, provider
+    ):
+        store = CompressionStore(enable_feedback=False)
+        hash_key = store.store(json.dumps({"values": [10, 20, 30]}), "{}", original_item_count=3)
+        previous_store = compression_store_module._request_ccr_store.get()
+        set_request_compression_store(store)
+        batch_store = BatchContextStore()
+        monkeypatch.setattr(batch_store_module, "_batch_context_store", batch_store)
+        context = BatchContext(batch_id="replay", provider=provider)
+        context.add_request(
+            BatchRequestContext(
+                custom_id="request",
+                messages=[{"role": "user", "content": "Sum the recovered values"}],
+                model="synthetic-model",
+            )
+        )
+        await batch_store.store(context)
+        if provider == "anthropic":
+            response = {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "retrieve",
+                        "name": CCR_TOOL_NAME,
+                        "input": {"hash": hash_key},
+                    }
+                ],
+                "stop_reason": "tool_use",
+            }
+            raw = {"custom_id": "request", "result": {"type": "succeeded", "message": response}}
+        else:
+            response = {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "retrieve",
+                                    "type": "function",
+                                    "function": {
+                                        "name": CCR_TOOL_NAME,
+                                        "arguments": json.dumps({"hash": hash_key}),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+            raw = {"custom_id": "request", "response": {"status_code": 200, "body": response}}
+        attempts = 0
+
+        def sum_recovered_values(request):
+            nonlocal attempts
+            body = json.loads(request.content)
+            content = body["messages"][-1]["content"]
+            if provider == "anthropic":
+                content = content[0]["content"]
+            retrieved = json.loads(content)
+            total = sum(json.loads(retrieved["original_content"])["values"])
+            attempts += 1
+            answer = json.dumps({"total": total})
+            final = (
+                {"content": [{"type": "text", "text": answer}], "stop_reason": "end_turn"}
+                if provider == "anthropic"
+                else {"choices": [{"message": {"content": answer}}]}
+            )
+            return httpx.Response(200, json=final)
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(sum_recovered_values)
+            ) as client:
+                processor = BatchResultProcessor(client)
+                first = (await processor.process_results("replay", [raw], provider))[0]
+                second = (await processor.process_results("replay", [raw], provider))[0]
+            assert [first.was_processed, second.was_processed] == [True, True]
+            assert attempts == 2
+            for result in (first, second):
+                answer = (
+                    result.result["result"]["message"]["content"][0]["text"]
+                    if provider == "anthropic"
+                    else result.result["response"]["body"]["choices"][0]["message"]["content"]
+                )
+                assert json.loads(answer) == {"total": 60}
+        finally:
+            set_request_compression_store(previous_store)
 
 
 class TestContinuationCalls:
