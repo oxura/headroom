@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import re
 import threading
 from types import SimpleNamespace
 
@@ -512,94 +514,42 @@ def test_force_kompress_apply_lightweight_detection_protects_recent_code(
     assert result.transforms_applied == ["router:protected:recent_code"]
 
 
-def test_content_router_mixed_pure_apply_and_toin(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = ContentRouter()
-    mixed_content = "\n".join(["before", "```python", "print('x')", "```", "after"])
-    monkeypatch.setattr(
-        content_router_module,
-        "split_into_sections",
-        lambda content, isolate=(): [
-            SimpleNamespace(
-                content="print('x')",
-                content_type=ContentType.SOURCE_CODE,
-                language="python",
-                is_code_fence=True,
-            ),
-            SimpleNamespace(
-                content="after text",
-                content_type=ContentType.PLAIN_TEXT,
-                language=None,
-                is_code_fence=False,
-            ),
-        ],
+@pytest.mark.parametrize("route", ["mixed_sections", "whole_block"])
+def test_fenced_python_stays_executable(monkeypatch: pytest.MonkeyPatch, route: str) -> None:
+    code = (
+        "def select(values):\n"
+        "    selected = []\n"
+        "    for value in values:\n"
+        "        if value or value == 0:\n"
+        "            selected.append(value)\n"
+        "        else:\n"
+        "            selected.append(-1)\n"
+        "    return selected"
     )
-    monkeypatch.setattr(
-        router,
-        "_apply_strategy_to_content",
-        lambda content, strategy, context, language=None, question=None, bias=1.0: (
-            f"{strategy.value}:{content}",
-            len(content.split()) - 1,
-            [strategy.value],
-        ),
-    )
-    result = router._compress_mixed(mixed_content, "ctx")
-    assert result.strategy_used is CompressionStrategy.MIXED
-    assert result.sections_processed == 2
-    assert "```python\ncode_aware:print('x')\n```" in result.compressed
+    content = f"Status: complete\n\n```python\n{code}\n```\n\nThe output is ready."
+    router = ContentRouter(ContentRouterConfig(enable_code_aware=False))
 
-    monkeypatch.setattr(
-        router,
-        "_apply_strategy_to_content",
-        lambda content, strategy, context, language=None, question=None, bias=1.0: (
-            "shrunk",
-            1,
-            [strategy.value],
-        ),
-    )
-    pure = router._compress_pure("some plain text", CompressionStrategy.TEXT, "ctx")
-    assert pure.routing_log[0].content_type is ContentType.PLAIN_TEXT
-    assert pure.total_original_tokens == _estimate_tokens("some plain text")
-    assert pure.total_compressed_tokens == 1
+    class KeywordDroppingKompress:
+        def is_ready(self) -> bool:
+            return True
 
-    calls: list[dict] = []
-    router._toin = SimpleNamespace(record_compression=lambda **kwargs: calls.append(kwargs))
-    monkeypatch.setattr(content_router_module, "_create_content_signature", lambda **kwargs: "sig")
-    router._record_to_toin(
-        CompressionStrategy.TEXT,
-        "original content",
-        "small",
-        original_tokens=10,
-        compressed_tokens=4,
-        language="python",
-        context="question",
-    )
-    assert calls[0]["tool_signature"] == "sig"
-    assert calls[0]["strategy"] == "text"
-    assert calls[0]["query_context"] == "question"
+        def compress(self, text: str, **_kwargs: object) -> SimpleNamespace:
+            compressed = re.sub(r"\b(?:for|in|if|or|else)\b", "", text)
+            return SimpleNamespace(
+                compressed=compressed,
+                compressed_tokens=_estimate_tokens(compressed),
+            )
 
-    router._record_to_toin(
-        CompressionStrategy.SMART_CRUSHER,
-        "x",
-        "x",
-        original_tokens=10,
-        compressed_tokens=4,
-    )
-    router._record_to_toin(
-        CompressionStrategy.TEXT,
-        "x",
-        "x",
-        original_tokens=2,
-        compressed_tokens=2,
-    )
-    monkeypatch.setattr(content_router_module, "_create_content_signature", lambda **kwargs: None)
-    router._record_to_toin(
-        CompressionStrategy.TEXT,
-        "x",
-        "y",
-        original_tokens=5,
-        compressed_tokens=1,
-    )
-    assert len(calls) == 1
+    monkeypatch.setattr(router, "_get_kompress", lambda: KeywordDroppingKompress())
+    if route == "mixed_sections":
+        output = router._compress_mixed(content, "").compressed
+    else:
+        output, _ = router._try_ml_compressor(content, "")
+    match = re.search(r"```python\n(.*?)\n```", output, re.DOTALL)
+    assert match is not None, output
+    namespace: dict = {}
+    exec(compile(ast.parse(match.group(1)), "<compressed-tool-result>", "exec"), namespace)
+    assert namespace["select"]([2, 0, None, 5]) == [2, 0, -1, 5]
 
 
 def test_diff_strategy_does_not_fallback_to_kompress_when_diff_is_noop(

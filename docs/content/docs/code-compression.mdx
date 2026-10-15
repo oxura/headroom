@@ -5,6 +5,11 @@ description: AST-aware compression that preserves imports, signatures, and types
 
 Headroom's CodeAwareCompressor uses tree-sitter to parse source code into an AST, then selectively compresses function bodies while preserving the structural elements that LLMs need -- imports, signatures, type annotations, and error handlers.
 
+ContentRouter keeps fenced code blocks in mixed tool results unchanged instead of
+passing their keywords through Kompress. Other sections still use their normal
+compression routes. This also protects fenced source when code-aware compression
+is disabled or unavailable.
+
 ## Why AST-Aware Compression?
 
 Naive truncation breaks code. Cutting a function in half leaves invalid syntax that confuses the LLM. CodeAwareCompressor guarantees:

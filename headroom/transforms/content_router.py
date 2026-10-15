@@ -3184,21 +3184,22 @@ class ContentRouter(Transform):
                 strategy_used=CompressionStrategy.PASSTHROUGH,
             )
 
-        # Placeholders must survive byte-exact: ``restore_tags`` DISCARDS a
-        # protected block whose placeholder was stripped or rewritten
-        # (Hotfix-A9), so a compressor eating a placeholder would silently
-        # drop the whole tag block — worse than the mangling this fixes.
-        # Any section carrying a placeholder is passed through verbatim
-        # instead of ever entering a compressor.
+        # Fenced source is not prose. Keep its code intact, and keep protected
+        # tag placeholders intact so restore_tags can recover their contents.
         placeholders = [placeholder for placeholder, _ in protected]
 
         compressed_sections: list[str] = []
         routing_log: list[RoutingDecision] = []
 
         for i, section in enumerate(sections):
-            if placeholders and any(ph in section.content for ph in placeholders):
-                section_tokens = _estimate_tokens(section.content)
-                compressed_sections.append(section.content)
+            if section.is_code_fence or (
+                placeholders and any(ph in section.content for ph in placeholders)
+            ):
+                section_text = section.content
+                if section.is_code_fence:
+                    section_text = f"```{section.language or ''}\n{section_text}\n```"
+                section_tokens = _estimate_tokens(section_text)
+                compressed_sections.append(section_text)
                 routing_log.append(
                     RoutingDecision(
                         content_type=section.content_type,
@@ -3223,10 +3224,6 @@ class ContentRouter(Transform):
                 question,
                 bias=bias,
             )
-
-            # Preserve code fence markers
-            if section.is_code_fence and section.language:
-                compressed_content = f"```{section.language}\n{compressed_content}\n```"
 
             # A JSON_ARRAY section whose compressed form is a bare JSON
             # *string* (SmartCrusher's lossless CSV+schema render replaces
@@ -3844,6 +3841,10 @@ class ContentRouter(Transform):
             log]``). Log readers use this to see *how* we got to the
             final compressor without parsing decision_reason strings.
         """
+        # Do not send fenced source through a prose or embedded-data fallback.
+        if _mixed_content._CODE_FENCE_PATTERN.search(content):
+            return content, _estimate_tokens(content), [CompressionStrategy.PASSTHROUGH.value]
+
         # Git status is path/state ground truth, not a rectangular CSV table.
         # Preserve it before embedded-JSON, lossy-after-fold and external stages.
         if _try_detect_git_status(_strip_detection_envelope(content)) is not None:
@@ -4584,7 +4585,7 @@ class ContentRouter(Transform):
         # (#3673). This boundary sees the final Kompress input, which may be a
         # prefixed block or a fragment rather than a whole JSON document, so
         # guard every parseable JSON span before the prose model runs.
-        if _contains_protected_json(content):
+        if _mixed_content._CODE_FENCE_PATTERN.search(content) or _contains_protected_json(content):
             return content, _estimate_tokens(content)
 
         from .tag_protector import protect_tags, restore_tags
