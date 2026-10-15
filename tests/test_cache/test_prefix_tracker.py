@@ -1074,11 +1074,11 @@ class TestConversationLineageResolution:
         ]
         return previous, current
 
-    def test_replaced_system_tail_keeps_confirmed_tracker(self, store):
-        """The previous request ended in a system reminder the client swapped
-        for new turns. Its unchanged history must keep the tracker and its
-        confirmed frozen prefix instead of starting a cold lineage."""
+    @pytest.mark.parametrize("reminder_role", ["system", "user"])
+    def test_replaced_text_tail_keeps_confirmed_tracker(self, store, reminder_role):
+        """A replaced text reminder must not discard the confirmed cached prefix."""
         previous, current = self._reminder_turns()
+        previous[-1]["role"] = current[-1]["role"] = reminder_role
         forwarded = [dict(m) for m in previous]
         forwarded[2] = {**previous[2], "content": "previously cached compressed result"}
         tracker = store.resolve_tracker("sid", "anthropic", previous, cache_affinity="a")
@@ -1166,11 +1166,11 @@ class TestConversationLineageResolution:
         assert store.resolve_tracker("sid", "anthropic", current) not in (tracker, other)
         assert store.resolve_tracker("sid", "anthropic", sibling) is other
 
-    def test_cache_delta_replays_prefix_past_replaced_system_tail(self, monkeypatch):
-        """Cache mode's delta split leaves the replaced reminder out of the
-        replayed prefix, with or without the model reply the handlers record
-        after the request, and compresses everything after it as new."""
+    @pytest.mark.parametrize("reminder_role", ["system", "user"])
+    def test_cache_delta_replays_prefix_past_replaced_text_tail(self, monkeypatch, reminder_role):
+        """Drop the replaced reminder, not the recorded reply or appended turns."""
         previous, current = self._reminder_turns()
+        previous[-1]["role"] = current[-1]["role"] = reminder_role
         reply = current[3]
         forwarded = [*previous[:2], {**previous[2], "content": "compressed"}, previous[3], reply]
         for recorded in ([*previous, reply], previous):
@@ -1179,7 +1179,7 @@ class TestConversationLineageResolution:
             assert prefix == replay[:3] + replay[4:]
             assert delta == current[len(prefix) :]
 
-        # A system message followed by a client turn is history, not a reminder.
+        # A reminder followed by a client turn is history, not a transient tail.
         changed = [*previous, {"role": "user", "content": "Continue."}]
         dropped = [*previous[:3], changed[4], *current[3:]]
         assert extract_cache_stable_delta(dropped, changed, changed) is None
@@ -1189,6 +1189,27 @@ class TestConversationLineageResolution:
 
         monkeypatch.setenv("HEADROOM_TRANSIENT_SYSTEM_LINEAGE", "0")
         assert extract_cache_stable_delta(current, [*previous, reply], forwarded) is None
+
+    def test_user_tool_result_tail_is_not_a_transient_reminder(self, store):
+        previous, current = self._reminder_turns()
+        previous[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "The command finished."},
+                {"type": "tool_result", "tool_use_id": "run-1", "content": "passed"},
+            ],
+        }
+        tracker = store.resolve_tracker("sid", "anthropic", previous)
+        tracker.update_from_response(
+            cache_read_tokens=0,
+            cache_write_tokens=1_000_000,
+            messages=previous,
+            original_messages=previous,
+            message_token_counts=[100] * len(previous),
+        )
+        resolved = store.resolve_tracker("sid", "anthropic", current)
+        assert resolved.get_frozen_message_count() == 0
+        assert extract_cache_stable_delta(current, previous, previous) is None
 
     def test_shared_session_id_is_not_rotated(self, store):
         """Composition guard: lineage resolution must not leak into session-id

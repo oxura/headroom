@@ -9,6 +9,12 @@ LLM providers cache prompt prefixes to avoid reprocessing identical input on rep
 CacheAligner is **disabled by default** and hard-disabled inside the proxy — it never runs on your traffic unless you explicitly enable it, and even then it only *reports* metrics; it never repairs a prefix. In proxy mode, prefix-cache stability comes from **cache mode** (`--mode cache`, the default), which compresses only the newest delta and forwards prior turns byte-faithfully. See [Savings Profiles](/docs/proxy#savings-profiles).
 </Callout>
 
+In Anthropic cache mode, a client can replace its last system or text-only user
+reminder without losing the unchanged cached history before it. Tool results and
+multimodal user messages are not treated as replaceable reminders, and same-length
+sibling conversations stay separate. Set `HEADROOM_TRANSIENT_SYSTEM_LINEAGE=0`
+to disable this matching.
+
 ## What CacheAligner reports
 
 System prompts often contain dynamic content, such as dates, session IDs, and timestamps, that changes between requests. Even a single character difference at the start of a prompt invalidates the entire provider cache.
