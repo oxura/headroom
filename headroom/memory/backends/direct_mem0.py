@@ -810,8 +810,8 @@ class DirectMem0Adapter:
         results = await asyncio.to_thread(
             self._mem0_client.search,
             query=query,
-            user_id=user_id,
-            limit=top_k,
+            filters={"user_id": user_id},
+            top_k=top_k,
         )
 
         search_results: list[MemorySearchResult] = []
@@ -819,7 +819,7 @@ class DirectMem0Adapter:
 
         for result in result_list:
             # Mem0 returns memory in metadata.memory when using direct Qdrant writes
-            result_metadata = result.get("metadata", {})
+            result_metadata = result.get("metadata") or {}
             memory_content = result.get("memory") or result_metadata.get(
                 "memory", result.get("content", "")
             )
@@ -841,7 +841,7 @@ class DirectMem0Adapter:
             memory = Memory(
                 id=memory_id,
                 content=memory_content,
-                user_id=result_metadata.get("user_id", user_id),
+                user_id=result.get("user_id", user_id),
                 session_id=result_metadata.get("session_id"),
                 importance=result_metadata.get("importance", 0.5),
                 entity_refs=result_metadata.get("entity_refs", []),

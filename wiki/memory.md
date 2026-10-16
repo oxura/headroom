@@ -425,6 +425,16 @@ asyncio.run(main())
 
 ## Configuration
 
+### Mem0 Backend
+
+The optional `headroom-ai[memory-stack]` integration targets Mem0 2.x.
+Use `DirectMem0Adapter.search_memories(..., user_id="alice", top_k=5)` or
+`Mem0Backend.search_memories(..., user_id="alice", limit=5)` to bound retrieval.
+Both adapters send the user scope through Mem0's `filters` and use its native
+`top_k` parameter. An explicit `user_id` takes precedence over
+`VectorFilter.user_id`; session and agent filters are retained. Returned
+memories retain Mem0's user identity rather than looking for it in custom metadata.
+
 ### Embedder Backends
 
 ```python

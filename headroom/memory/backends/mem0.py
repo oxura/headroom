@@ -233,11 +233,11 @@ class Mem0Backend:
         Returns:
             A Memory object.
         """
-        metadata = result.get("metadata", {})
+        metadata = result.get("metadata") or {}
 
-        # Extract fields from metadata, with defaults
+        # Extract Mem0 fields and custom metadata, with defaults
         memory_id = metadata.get("headroom_id", result.get("id", str(uuid.uuid4())))
-        user_id = metadata.get("user_id", "")
+        user_id = result.get("user_id") or ""
         importance = metadata.get("importance", 0.5)
 
         # Parse timestamps
@@ -379,19 +379,14 @@ class Mem0Backend:
         # Build search kwargs
         search_kwargs: dict[str, Any] = {
             "query": query,
-            "limit": limit,
+            "top_k": limit,
         }
 
+        filters = self._build_mem0_filters(filter) if filter else {}
         if user_id:
-            search_kwargs["user_id"] = user_id
-        elif filter and filter.user_id:
-            search_kwargs["user_id"] = filter.user_id
-
-        # Add filters if provided
-        if filter:
-            filters = self._build_mem0_filters(filter)
-            if filters:
-                search_kwargs["filters"] = filters
+            filters["user_id"] = user_id
+        if filters:
+            search_kwargs["filters"] = filters
 
         # Execute search
         results = await asyncio.to_thread(client.search, **search_kwargs)
