@@ -75,6 +75,12 @@ curl "http://localhost:8787/stats-history?format=csv&series=monthly"
 curl http://localhost:8787/metrics
 ```
 
+`/metrics` is a read-only **operator** endpoint. A remote caller outside the
+configured trust boundary gets `404`, even when `/health` or `/stats` responds.
+`HEADROOM_ALLOW_UNAUTHENTICATED_BIND` acknowledges a public bind, and
+`HEADROOM_COMPRESS_ALLOW_REMOTE` permits remote compression; neither grants
+operator access. `HEADROOM_TELEMETRY=off` does not remove the route.
+
 ```
 # HELP headroom_requests_total Total requests processed
 headroom_requests_total 1234
@@ -116,6 +122,41 @@ reproduce the previous single-series behaviour.
 <Callout type="warn" title="No percentile buckets on /metrics">
 There are no Prometheus histogram buckets for compression ratio or latency — build percentiles or averages from `_sum` / `_count` pairs (`headroom_latency_ms_sum`, `headroom_latency_ms_count`, and so on), or use the `headroom perf` CLI for real p95/p99.
 </Callout>
+
+#### Remote Prometheus scraping
+
+Set `HEADROOM_PROXY_TOKEN` from your secret store in the proxy's environment,
+then start the proxy on its service interface. Use the same secret for the
+scraper:
+
+```bash
+curl --fail \
+  -H "Authorization: Bearer ${HEADROOM_PROXY_TOKEN}" \
+  http://headroom:8787/metrics
+```
+
+For Prometheus, mount the token as a readable secret file rather than putting
+its value in `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: headroom
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["headroom:8787"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/headroom-proxy-token
+```
+
+This example assumes a private, access-controlled service network. Use TLS
+termination when the token would otherwise cross an untrusted network.
+
+The proxy token also protects **other non-loopback proxy requests**, not just
+metrics. Update those clients too: use `X-Headroom-Proxy-Token` when their
+`Authorization` header already carries a provider credential. With token
+authentication configured, a missing or incorrect token gets `401` at the
+security gate. See the [proxy security settings](/docs/proxy#security-and-networking).
 
 ### OpenTelemetry (OTLP) Export
 

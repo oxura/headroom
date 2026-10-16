@@ -6575,7 +6575,7 @@ def run_server(
 ║    /readyz                  Traffic readiness                        ║
 ║    /health                  Aggregate health                         ║
 ║    /stats                   Detailed statistics                      ║
-║    /metrics                 Prometheus metrics                       ║
+║    /metrics                 Prometheus metrics (operator-only)       ║
 ║    /cache/clear             Clear response cache                     ║
 ║    /v1/retrieve             CCR: Retrieve compressed content         ║
 ║    /v1/retrieve/stats       CCR: Compression store stats             ║

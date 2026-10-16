@@ -1879,7 +1879,7 @@ Endpoints:
   GET  /health     Aggregate health
   GET  /stats      Detailed statistics
   GET  /stats-history Durable compression history + display session
-  GET  /metrics    Prometheus metrics
+  GET  /metrics    Prometheus metrics (operator-only)
 
 Press Ctrl+C to stop.
 """)
