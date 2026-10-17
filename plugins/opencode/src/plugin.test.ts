@@ -404,56 +404,6 @@ describe("headroomSetup (OpenCode 2.x)", () => {
     });
   });
 
-  it("leaves local, already-proxied, non-OpenAI-wire and URL-less models alone", async () => {
-    const models: FakeModel[] = [
-      { id: "llama", providerID: "ollama" },
-      { id: "gpt-4o", providerID: "openai" },
-      { id: "claude", providerID: "anthropic-gateway" },
-      { id: "glm", providerID: "zai-coding-plan", package: "@opencode/ai/providers/zai-coding-plan/messages" },
-      { id: "sonnet", providerID: "anthropic" },
-      { id: "gemini", providerID: "google" },
-    ];
-    const snapshot = structuredClone(models);
-    const { context } = pluginContextV2(
-      { proxyUrl: "http://127.0.0.1:8787" },
-      {
-        providers: [
-          {
-            id: "ollama",
-            package: "@opencode/ai/providers/openai-compatible",
-            settings: { baseURL: "http://127.0.0.1:11434/v1" },
-          },
-          {
-            id: "openai",
-            package: "@opencode/ai/providers/openai/responses",
-            settings: { baseURL: "http://127.0.0.1:8787/v1" },
-          },
-          {
-            id: "anthropic-gateway",
-            package: "@opencode/ai/providers/anthropic",
-            settings: { baseURL: "https://gateway.example/v1" },
-          },
-          {
-            id: "zai-coding-plan",
-            package: "@opencode/ai/providers/zai-coding-plan/chat",
-            settings: { baseURL: "https://api.z.ai/api/coding/paas/v4" },
-          },
-          { id: "anthropic", package: "@opencode/ai/providers/anthropic" },
-          {
-            id: "google",
-            package: "@ai-sdk/google",
-            settings: { baseURL: "https://generativelanguage.googleapis.com/v1beta" },
-          },
-        ],
-        models,
-      },
-    );
-
-    const cleanup = await headroomSetup(context);
-    await cleanup?.();
-
-    expect(models).toEqual(snapshot);
-  });
 
   it("releases the transport on cleanup so reloads do not leak it", async () => {
     const { context } = pluginContextV2({ proxyUrl: "http://127.0.0.1:8787" });

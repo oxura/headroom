@@ -70,22 +70,25 @@ function headroomShellEnv(
   };
 }
 
-// The endpoint an OpenCode 2.x package calls under its baseURL, for packages
-// on the OpenAI chat-completions or responses wire format; undefined otherwise.
-// `.../messages` (Anthropic wire) and other protocols are left alone.
-function openAiWireSuffix(pkg: string | undefined): string | undefined {
+// Inference path under an OpenCode 2.x model's base URL for supported wire formats.
+function modelWireSuffix(pkg: string | undefined): string | undefined {
   if (!pkg?.startsWith("@opencode/ai/providers/")) return undefined;
   if (pkg === "@opencode/ai/providers/openai-compatible" || pkg.endsWith("/chat")) {
     return "/chat/completions";
   }
   if (pkg.endsWith("-responses") || pkg.endsWith("/responses")) return "/responses";
+  if (
+    pkg === "@opencode/ai/providers/anthropic" ||
+    pkg === "@opencode/ai/providers/anthropic-compatible" ||
+    pkg.endsWith("/messages")
+  ) return "/messages";
   return undefined;
 }
 
 // OpenCode 2.x sends model traffic through Effect's FetchHttpClient, which
 // captures `globalThis.fetch` on the process's first HTTP request, before any
 // plugin runs, so the transport's fetch patch never sees it. Point each
-// remote OpenAI-wire model at the proxy instead, with the same routing headers
+// supported remote model at the proxy instead, with the same routing headers
 // the transport sends: the upstream origin, and the real path the proxy
 // appends to it.
 type ModelEditor = Parameters<Parameters<PluginV2.Context["model"]["transform"]>[0]>[0];
@@ -102,7 +105,7 @@ function routeModelsThroughProxy(
     const providerID = String(model.providerID);
     const modelID = String(model.id);
     const provider = models.provider.get(providerID)?.provider;
-    const suffix = openAiWireSuffix(model.package ?? provider?.package);
+    const suffix = modelWireSuffix(model.package ?? provider?.package);
     const baseURL = model.settings?.baseURL ?? provider?.settings?.baseURL;
     if (!suffix || typeof baseURL !== "string") continue;
     if (!modelBaseRoutesThroughProxy(baseURL, proxyUrl, excludeHosts)) continue;
