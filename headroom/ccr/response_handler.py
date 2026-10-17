@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from codecs import BOM_UTF8
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -816,6 +817,8 @@ class StreamingCCRHandler:
         # mid-event — log and ignore (already handled at the streaming
         # layer above).
         buf = bytearray(data)
+        if buf.startswith(BOM_UTF8):
+            del buf[: len(BOM_UTF8)]
         events: list[dict[str, Any]] = []
         for _event_name, data_str in parse_sse_events_from_byte_buffer(buf):
             stripped = data_str.strip()

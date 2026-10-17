@@ -73,6 +73,10 @@ When the LLM calls `headroom_retrieve`:
 
 The client never sees CCR tool calls on the Anthropic and OpenAI proxy paths; Headroom resolves them transparently there.
 
+Closed SSE reconstruction ignores one initial UTF-8 BOM as a stream marker,
+not a character in the first event header. BOMs inside response text remain
+data, and opaque Anthropic frames retain their original replay bytes.
+
 <Callout type="warning" title="Gemini CCR boundary">
   Buffered native Gemini requests resolve `headroom_retrieve` server-side and
   return the model's final response. Streaming native Gemini requests keep the

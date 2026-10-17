@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from codecs import BOM_UTF8
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -486,7 +487,13 @@ class AnthropicSSEEnvelope:
             every original frame needed for loss-minimizing replay.
         """
 
-        frames = [_SSEFrame(raw, *_json_payload(raw)) for raw in _split_frames(raw_sse_bytes)]
+        # Ignore a stream BOM for decoding, but keep opaque replay bytes intact.
+        strip_bom = raw_sse_bytes.startswith(BOM_UTF8)
+        frames: list[_SSEFrame] = []
+        for raw in _split_frames(raw_sse_bytes):
+            payload_bytes = raw.removeprefix(BOM_UTF8) if strip_bom else raw
+            frames.append(_SSEFrame(raw, *_json_payload(payload_bytes)))
+            strip_bom = False
         reconstruction = _response_from_events(frames)
 
         # Anything the reconstruction did not consume is replayed verbatim.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from codecs import BOM_UTF8
 from pathlib import Path
 
 import httpx
@@ -51,6 +52,13 @@ def test_sse_round_trip_preserves_opaque_result_order_and_ids() -> None:
     stop_offset = rendered.index(b"event: message_stop")
     assert safeguard_offset < delta_offset < stop_offset
     assert b'"id": "toolu_auto_001"' in rendered
+
+
+def test_stream_bom_on_opaque_first_frame_is_replayed_verbatim() -> None:
+    prefix = BOM_UTF8 + b": opaque preamble\n\n"
+    envelope = AnthropicSSEEnvelope.parse(prefix + _fixture("claude_code_auto_mode_stream.sse"))
+
+    assert b"".join(envelope.render(envelope.message)).startswith(prefix)
 
 
 def test_sse_round_trip_keeps_results_across_a_ccr_continuation() -> None:
