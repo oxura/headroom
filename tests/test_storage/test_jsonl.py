@@ -69,6 +69,27 @@ def _assert_timestamp_desc(metrics: list[RequestMetrics]) -> None:
     assert stamps == sorted(stamps, reverse=True)
 
 
+def test_get_returns_last_saved_snapshot_without_rewriting_history(tmp_path):
+    path = str(tmp_path / "metrics.jsonl")
+    timestamp = datetime(2025, 1, 6, 12)
+    initial = _metrics("a", timestamp)
+    initial.tokens_output = None
+    updated = _metrics("a", timestamp)
+    updated.tokens_output = 77
+    storage = JSONLStorage(path)
+    for row in [initial, _metrics("b", timestamp), updated, _metrics("c", timestamp)]:
+        storage.save(row)
+    storage.close()
+
+    reopened = JSONLStorage(path)
+    latest = reopened.get("a")
+    assert latest is not None
+    assert latest.tokens_output == 77
+    assert reopened.get("missing") is None
+    assert [row.tokens_output for row in reopened.iter_all() if row.request_id == "a"] == [None, 77]
+    reopened.close()
+
+
 class TestJSONLQueryPagingContract:
     """JSONLStorage.query() must page like SQLiteStorage.query() (issue #3822).
 

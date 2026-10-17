@@ -1,4 +1,9 @@
-"""Storage modules for Headroom SDK."""
+"""Storage modules for Headroom SDK.
+
+JSONL keeps an append-only journal, but ``get(request_id)`` selects the last
+saved snapshot, matching SQLite's replacement saves. JSONL iteration and queries
+still include the journal's historical rows.
+"""
 
 import logging
 import os
