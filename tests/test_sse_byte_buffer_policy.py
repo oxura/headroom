@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from headroom.proxy.sse_byte_buffer_policy import (
@@ -31,3 +33,13 @@ def test_parse_sse_events_preserves_split_utf8_tail() -> None:
 def test_parse_sse_events_raises_on_complete_invalid_utf8_event() -> None:
     with pytest.raises(UnicodeDecodeError):
         parse_sse_events_from_byte_buffer(bytearray(b"data: \xff\n\n"))
+
+
+def test_parse_sse_events_preserves_unicode_separators_in_json() -> None:
+    text = "before\u0085middle\u2028paragraph\u2029after"
+    payload = {"choices": [{"delta": {"content": text}}]}
+    raw = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+
+    events = parse_sse_events_from_byte_buffer(bytearray(raw))
+
+    assert json.loads(events[0][1])["choices"][0]["delta"]["content"] == text

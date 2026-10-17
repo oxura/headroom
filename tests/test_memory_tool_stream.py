@@ -86,9 +86,9 @@ def _sse(blocks: list[dict[str, Any]], stop_reason: str, *, input_tokens: int = 
 
 def _events(raw: bytes) -> list[dict[str, Any]]:
     return [
-        json.loads(line[len("data: ") :])
-        for line in raw.decode().splitlines()
-        if line.startswith("data: ")
+        json.loads(line[len(b"data: ") :])
+        for line in raw.splitlines()
+        if line.startswith(b"data: ")
     ]
 
 
@@ -136,6 +136,21 @@ class TestMemoryToolStreamFilter:
         forwarded = _events(b"".join(flt.feed(_sse([SAVE, TEXT], "end_turn"))))
         assert {e["index"] for e in forwarded if "index" in e} == {0}
         assert flt.next_index == 1
+
+    def test_continuation_reindexes_text_with_unicode_separators(self) -> None:
+        text = "before\u0085middle\u2028paragraph\u2029after"
+        raw = _sse([{"type": "text", "text": text}], "end_turn")
+        for character in ("\u0085", "\u2028", "\u2029"):
+            raw = raw.replace(json.dumps(character)[1:-1].encode(), character.encode())
+        flt = MemoryToolStreamFilter(MEMORY_TOOLS, index_offset=2, forward_message_start=False)
+
+        forwarded = _events(b"".join(flt.feed(raw)))
+
+        assert {event["index"] for event in forwarded if "index" in event} == {2}
+        delta = next(
+            event["delta"] for event in forwarded if event["type"] == "content_block_delta"
+        )
+        assert delta["text"] == text
 
     def test_continuation_round_extends_the_open_message(self) -> None:
         flt = MemoryToolStreamFilter(MEMORY_TOOLS, index_offset=1, forward_message_start=False)
