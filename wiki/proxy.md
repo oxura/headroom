@@ -212,6 +212,20 @@ observed TTL breakdowns under `prefix_cache`:
 These are provider-reported observations, not configured TTL and not remaining
 expiration time.
 
+### Local Memory Diagnostics
+
+`/debug/memory` is a private operator endpoint, not part of the public OpenAPI
+schema. It remains available locally:
+
+```bash
+curl http://127.0.0.1:8787/debug/memory
+```
+
+Both the connection's peer address and the HTTP `Host` must be loopback. A
+forwarded Docker port can therefore return 404 even when the proxy is healthy.
+Run the request from the proxy's network namespace in that case; changing the
+`Host` header alone does not bypass the peer-address check.
+
 ### Historical Savings
 
 ```bash
