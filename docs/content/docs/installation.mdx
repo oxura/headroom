@@ -85,6 +85,15 @@ The core package includes the `compress()` function, SmartCrusher, CacheAligner,
 
 > **Note:** IntelligentContext / RollingWindow (score-based history dropping) were retired in PR-B1. Headroom compresses fresh tool output and new turns only — it does not drop conversation history.
 
+### Updating
+
+Use `headroom update --check` to inspect an available upgrade, or
+`headroom update --yes` to install it with pip, pipx, or uv tool.
+Synchronous updates verify the installed distribution before reporting success;
+an unchanged older version is an error even if the package manager exited zero.
+Windows pip handoffs report that the upgrade has started instead. Once that
+child process finishes, check `headroom --version`.
+
 ### Extras
 
 Install only what you need, or grab everything with `[all]`:

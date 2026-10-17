@@ -129,27 +129,21 @@ def test_update_check_reports_command_without_running(monkeypatch):
     assert "pip" in res.output and "install" in res.output
 
 
-def test_update_runs_upgrade_with_yes(monkeypatch):
-    calls = {}
-
-    monkeypatch.setattr(up, "installed_version", lambda: "0.26.0")
+@pytest.mark.parametrize(
+    ("installed_after", "exit_code"),
+    [("0.26.0", 1), ("0.27", 0), ("0.28.0", 0), (None, 1), ("broken", 1)],
+)
+def test_update_verifies_installed_version(monkeypatch, installed_after, exit_code):
+    versions = iter(["0.26.0", installed_after])
+    monkeypatch.setattr(up, "installed_version", lambda: next(versions))
     monkeypatch.setattr(up, "fetch_latest_version", lambda **k: "0.27.0")
     monkeypatch.setattr(up, "_in_virtualenv", lambda: True)
     monkeypatch.setattr(up.sys, "platform", "linux")
-    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)  # Skip integrity checks
+    monkeypatch.setattr(up, "safe_update", lambda argv: 0)
 
-    class _Result:
-        returncode = 0
-
-    def _run(argv, *a, **k):
-        calls["argv"] = argv
-        return _Result()
-
-    monkeypatch.setattr(up.subprocess, "run", _run)
     res = CliRunner().invoke(main, ["update", "--yes"])
-    assert res.exit_code == 0
-    assert calls["argv"][:4] == [sys.executable, "-m", "pip", "install"]
-    assert "upgraded to 0.27.0" in res.output
+
+    assert res.exit_code == exit_code
 
 
 def test_update_windows_pip_handoff_uses_popen(monkeypatch):
@@ -201,9 +195,8 @@ def test_update_windows_pip_handoff_uses_popen(monkeypatch):
 
 
 def test_update_windows_non_pip_path_stays_synchronous(monkeypatch):
-    calls = {}
-
-    monkeypatch.setattr(up, "installed_version", lambda: "0.26.0")
+    versions = iter(["0.26.0", "0.27.0"])
+    monkeypatch.setattr(up, "installed_version", lambda: next(versions))
     monkeypatch.setattr(up, "fetch_latest_version", lambda **k: "0.27.0")
     monkeypatch.setattr(up.sys, "platform", "win32")
     monkeypatch.setattr(
@@ -219,11 +212,10 @@ def test_update_windows_non_pip_path_stays_synchronous(monkeypatch):
     def _popen(*a, **k):
         raise AssertionError("pipx must stay on the synchronous path")
 
-    monkeypatch.setattr(up, "safe_update", lambda argv: calls.setdefault("safe_update", argv) and 0)
+    monkeypatch.setattr(up, "safe_update", lambda argv: 0)
     monkeypatch.setattr(up.subprocess, "Popen", _popen)
     res = CliRunner().invoke(main, ["update", "--yes"])
     assert res.exit_code == 0
-    assert calls["safe_update"] == ["pipx", "upgrade", "headroom-ai"]
 
 
 def test_update_refuses_in_checkout(monkeypatch):

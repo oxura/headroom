@@ -456,6 +456,8 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
     (with guidance) for git checkouts, editable installs, Docker, and system
     Python.
     """
+    from packaging.version import InvalidVersion, Version
+
     current = installed_version()
 
     click.echo("Checking PyPI for the latest Headroom release...")
@@ -467,8 +469,6 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
     write_cache(latest)
 
     if current:
-        from packaging.version import InvalidVersion, Version
-
         try:
             if Version(latest) <= Version(current):
                 click.echo(f"Headroom is up to date ({current}).")
@@ -519,8 +519,19 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
     if returncode != 0:
         raise click.ClickException(f"Upgrade failed (exit {returncode}). Run manually: {cmd_str}")
 
+    installed = installed_version()
+    try:
+        upgraded = installed is not None and Version(installed) >= Version(latest)
+    except InvalidVersion:
+        upgraded = False
+    if not upgraded:
+        raise click.ClickException(
+            f"Upgrade finished, but the installed version is {installed or 'unknown'}; "
+            f"expected at least {latest}. Check the package manager output above."
+        )
+
     # ASCII-only output — emoji can raise UnicodeEncodeError on some Windows consoles.
-    click.echo(f"Headroom upgraded to {latest}.")
+    click.echo(f"Headroom upgraded to {installed}.")
     click.echo("Restart any running `headroom proxy` to pick up the new version.")
 
 
