@@ -1582,16 +1582,17 @@ fn known_html_tag_names() -> Vec<&'static str> {
 ///   to `headroom_core::transforms::live_zone::DEFAULT_MODEL`.
 ///
 /// # Returns
-/// `(body, modified)`:
-/// * Modified: `(new_body_bytes, True)` — caller forwards the new bytes.
-/// * Unchanged / passthrough: `(input_bytes, False)` — caller forwards
-///   the original.
+/// `(body, modified, tokens_saved, transforms_applied, no_change_reason)`.
+/// Modified results contain the new bytes; passthrough preserves the input.
 ///
 /// # Failure mode
 /// Never raises. The dispatcher's `LiveZoneError` outcomes (body not
 /// JSON, no `messages`/`input` array) are passthrough conditions, not
 /// failures — matching the Rust proxy's
 /// `compress_openai_responses_request` contract.
+///
+/// Rust dispatch releases the GIL. Python result objects are constructed
+/// after reacquiring it, so compression does not block other Python threads.
 #[pyfunction]
 #[pyo3(signature = (body, auth_mode = "payg", model = ""))]
 fn compress_openai_responses_live_zone(
@@ -1612,7 +1613,8 @@ fn compress_openai_responses_live_zone(
         model
     };
 
-    match rust_compress_openai_responses_live_zone(body, mode, model_str) {
+    let outcome = py.detach(|| rust_compress_openai_responses_live_zone(body, mode, model_str));
+    match outcome {
         Ok(LiveZoneOutcome::NoChange { manifest }) => {
             let saved = manifest.tokens_saved() as u64;
             let transforms: Vec<String> = manifest
