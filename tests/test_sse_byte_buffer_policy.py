@@ -31,3 +31,23 @@ def test_parse_sse_events_preserves_split_utf8_tail() -> None:
 def test_parse_sse_events_raises_on_complete_invalid_utf8_event() -> None:
     with pytest.raises(UnicodeDecodeError):
         parse_sse_events_from_byte_buffer(bytearray(b"data: \xff\n\n"))
+
+
+def test_parse_sse_events_drains_cr_only_frames() -> None:
+    buf = bytearray(b'event: delta\rdata: {"value": 1}\r\rpartial')
+
+    assert parse_sse_events_from_byte_buffer(buf) == [("delta", '{"value": 1}')]
+    assert bytes(buf) == b"partial"
+
+
+def test_parse_sse_events_handles_mixed_line_endings_bytewise() -> None:
+    wire = b"data: one\r\n\r\ndata: two\r\rdata: three\n\r\n"
+    buf = bytearray()
+    events: list[tuple[str | None, str]] = []
+
+    for byte in wire:
+        buf.append(byte)
+        events.extend(parse_sse_events_from_byte_buffer(buf))
+
+    assert events == [(None, "one"), (None, "two"), (None, "three")]
+    assert bytes(buf) == b""

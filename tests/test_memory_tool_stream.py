@@ -119,6 +119,15 @@ class TestMemoryToolStreamFilter:
         got += b"".join(trickle.closing_frames())
         assert got == expected
 
+    def test_crlf_bytewise_without_memory_calls_keeps_wire_bytes(self) -> None:
+        raw = _sse([TEXT, BASH], "tool_use").replace(b"\n", b"\r\n")
+        flt = MemoryToolStreamFilter(MEMORY_TOOLS)
+        forwarded = b"".join(
+            b"".join(flt.feed(raw[index : index + 1])) for index in range(len(raw))
+        )
+
+        assert forwarded + b"".join(flt.closing_frames()) == raw
+
     def test_memory_tool_use_is_withheld_and_turn_ends(self) -> None:
         flt = MemoryToolStreamFilter(MEMORY_TOOLS)
         forwarded = _events(b"".join(flt.feed(_sse([TEXT, SAVE], "tool_use"))))
@@ -130,6 +139,20 @@ class TestMemoryToolStreamFilter:
         tail = _events(b"".join(flt.closing_frames()))
         assert [e["type"] for e in tail] == ["message_delta", "message_stop"]
         assert tail[0]["delta"]["stop_reason"] == "end_turn"
+
+    def test_cr_only_frames_withhold_proxy_owned_memory_calls(self) -> None:
+        flt = MemoryToolStreamFilter(MEMORY_TOOLS)
+        raw = _sse([TEXT, SAVE], "tool_use").replace(b"\n", b"\r")
+
+        forwarded = _events(b"".join(flt.feed(raw)))
+
+        text = next(event["delta"]["text"] for event in forwarded if "delta" in event)
+        assert text == TEXT["text"]
+        assert flt.hidden_tool_names == ["memory_save"]
+        assert flt.stop_reason == "tool_use"
+        assert not any(
+            event.get("content_block", {}).get("name") == "memory_save" for event in forwarded
+        )
 
     def test_blocks_after_a_hidden_call_are_reindexed(self) -> None:
         flt = MemoryToolStreamFilter(MEMORY_TOOLS)

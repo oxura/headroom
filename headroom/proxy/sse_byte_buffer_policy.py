@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
-# SSE byte-buffer helper supports LF and CRLF event separators. Per the SSE
-# spec the default event name is "message"; we return ``None`` so callers can
-# decide whether to apply that default.
-SSE_EVENT_TERMINATORS = (b"\n\n", b"\r\n\r\n")
+import re
+
+# SSE lines may end in LF, CRLF or CR. The default event name is "message";
+# return ``None`` so callers can decide whether to apply that default.
+_SSE_EVENT_TERMINATOR_RE = re.compile(rb"(?:\r\n|\n|\r(?!\n))(?:\r\n?|\n)")
 SSE_EVENT_LINE_PREFIX = "event:"
 SSE_DATA_LINE_PREFIX = "data:"
 
 
 def find_sse_event_terminator(buf: bytearray) -> tuple[int, int] | None:
     """Return the earliest complete SSE event terminator in ``buf``."""
-    matches = [
-        (idx, len(terminator))
-        for terminator in SSE_EVENT_TERMINATORS
-        if (idx := buf.find(terminator)) != -1
-    ]
-    if not matches:
+    if not buf:
         return None
-    return min(matches, key=lambda match: match[0])
+    # An empty leading line also consumes the LF left by a split CRLF.
+    if buf[0] in (10, 13):
+        return 0, 2 if buf.startswith(b"\r\n") else 1
+    match = _SSE_EVENT_TERMINATOR_RE.search(buf)
+    if match is None:
+        return None
+    start = match.start()
+    return start, match.end() - start
 
 
 def parse_sse_events_from_byte_buffer(

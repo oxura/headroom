@@ -72,6 +72,10 @@ When the LLM calls `headroom_retrieve`:
 4. The API call continues automatically
 
 The client never sees CCR tool calls on the Anthropic and OpenAI proxy paths; Headroom resolves them transparently there.
+Streaming interception accepts LF, CRLF, and CR event boundaries, including
+boundaries split between network reads. Deferred message-tail frames keep their
+original CRLF bytes when no rewriting is needed.
+
 
 <Callout type="warning" title="Gemini CCR boundary">
   Buffered native Gemini requests resolve `headroom_retrieve` server-side and

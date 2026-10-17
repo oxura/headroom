@@ -121,6 +121,7 @@ class MemoryToolStreamFilter:
         self.visible_tool_use = False
         self.stop_reason: str | None = None
         self._tail: list[tuple[str, dict[str, Any] | None, bytes]] = []
+        self._pending_tail_cr = False
 
     @property
     def hid_tool_calls(self) -> bool:
@@ -178,7 +179,16 @@ class MemoryToolStreamFilter:
             idx, terminator_len = match
             frame = bytes(self._buffer[: idx + terminator_len])
             del self._buffer[: idx + terminator_len]
+            if self._pending_tail_cr and frame == b"\n":
+                # Keep split CRLF bytes with the tail frame they terminate.
+                event_name, payload, raw = self._tail[-1]
+                self._tail[-1] = (event_name, payload, raw + frame)
+                self._tail_bytes += 1
+                self._pending_tail_cr = False
+                continue
+            tail_count = len(self._tail)
             forwarded = self._route(frame)
+            self._pending_tail_cr = len(self._tail) > tail_count and frame.endswith(b"\r")
             if forwarded is not None:
                 out.append(forwarded)
         retained = len(self._buffer) + self._tail_bytes + sum(self._hidden_bytes.values())
@@ -189,6 +199,7 @@ class MemoryToolStreamFilter:
             self._hidden_stopped.clear()
             self._tail.clear()
             self._tail_bytes = 0
+            self._pending_tail_cr = False
             raise MemoryToolStreamOverflowError(
                 f"memory tool stream filter would retain {retained} bytes "
                 f"(limit {self._max_retained_bytes})"
@@ -285,6 +296,7 @@ class MemoryToolStreamFilter:
         this one: ``output_tokens`` always, other counters where the delta
         reports them.
         """
+        self._pending_tail_cr = False
         frames: list[bytes] = []
         for event_name, payload, raw in self._tail:
             if (
