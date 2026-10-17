@@ -418,10 +418,10 @@ def _load_json_value(raw: Any) -> Any:
 # package's import graph; mirrors CCR_TOOL_NAME there.
 _CCR_RETRIEVE_TOOL_NAME = "headroom_retrieve"
 
-# Orchestrator wrappers. OpenCode V2 Code Mode runs every MCP call inside its
-# built-in `execute` tool, and Codex code mode sends calls as `exec` /
-# `functions.exec` custom tool calls whose payload is JavaScript. On the wire
-# the name is the wrapper -- the inner tool name never reaches the proxy -- so
+# Orchestrator wrappers. OpenCode V2 uses `execute`; Codex code mode uses
+# `exec` / `functions.exec`; pi uses `codemode`. Their payloads contain
+# JavaScript. On the wire the name is the wrapper -- the inner tool name
+# never reaches the proxy -- so
 # when the script invokes the retrieval tool the ccr_retrieve exemption misses
 # and the retrieved bytes are re-offloaded into a <<ccr:hash>> marker the agent
 # can never redeem (unresolvable retrieval loop, #3563).
@@ -439,7 +439,7 @@ _CCR_RETRIEVE_TOOL_NAME = "headroom_retrieve"
 # Matching runs on decoded script text: the OpenAI wire hands the payload over
 # JSON-encoded, where a real newline between the callee and `(` arrives as the
 # two characters `\n` and a raw-text scan misses the call.
-_ORCHESTRATOR_WRAPPER_NAMES = frozenset({"execute", "exec", "functions.exec"})
+_ORCHESTRATOR_WRAPPER_NAMES = frozenset({"execute", "exec", "functions.exec", "codemode"})
 
 # JavaScript call expressions inside a wrapper payload: `headroom_retrieve(`,
 # `tools.headroom.headroom_retrieve(`, plus bracket access
@@ -526,8 +526,8 @@ def unwrap_tool_call(name: str, arguments: Any) -> tuple[str, Any]:
 
     Two wrapper families resolve here beyond the pass-through: the Hermes
     deferred ``tool_call`` bridge (see comment above), and an orchestrator
-    wrapper (``execute`` / ``exec`` / ``functions.exec``) whose payload invokes
-    the retrieval tool -- the latter reports the retrieval tool's own name so
+    wrapper (``execute`` / ``exec`` / ``functions.exec`` / ``codemode``) whose
+    payload invokes retrieval -- it reports the retrieval tool's own name so
     its result keeps the ccr_retrieve exemption (#3563). A Hermes bridge over
     an orchestrator call (``tool_call`` -> ``execute`` -> script) resolves
     through that same orchestrator rule.

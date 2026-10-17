@@ -174,7 +174,7 @@ class TestHeadroomRetrieveExemptionAnthropic:
 
 
 @pytest.mark.parametrize("wire", ["openai", "anthropic"])
-@pytest.mark.parametrize("wrapper", ["tool_call", "functions.exec"])
+@pytest.mark.parametrize("wrapper", ["tool_call", "functions.exec", "codemode"])
 def test_wrapped_retrieval_is_exact_and_unrelated_wrapper_remains_compressible(wire, wrapper):
     content = json.dumps([{"id": i, "value": "sample record " * 8} for i in range(200)])
     retrieval_args = (
