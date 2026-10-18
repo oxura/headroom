@@ -335,6 +335,11 @@ FRAMING_RESPONSE_HEADERS: tuple[str, ...] = (
     "transfer-encoding",
     "connection",
     "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "proxy-authenticate",
+    "proxy-authorization",
     "server",
 )
 
@@ -343,7 +348,7 @@ def sanitize_forwarded_response_headers(
     headers: Any,
     *extra_names: str,
 ) -> dict[str, str]:
-    """Drop wire-framing headers before replaying an upstream response.
+    """Drop wire-framing and connection-local headers before replaying a response.
 
     Pass any additional header names to strip as ``extra_names`` (for
     example ``"content-type"`` when the caller sets its own media type).
@@ -351,8 +356,15 @@ def sanitize_forwarded_response_headers(
     Matching is case-insensitive, but the casing of the headers that
     survive is left untouched.
     """
+    items = list(headers.items())
     drop = {name.lower() for name in (*FRAMING_RESPONSE_HEADERS, *extra_names)}
-    return {key: value for key, value in dict(headers).items() if key.lower() not in drop}
+    drop.update(
+        token.strip().lower()
+        for key, value in items
+        if key.lower() == "connection"
+        for token in value.split(",")
+    )
+    return {key: value for key, value in items if key.lower() not in drop}
 
 
 def _path_for_log(path: str) -> str:

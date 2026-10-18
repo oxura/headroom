@@ -118,6 +118,24 @@ class TestSanitizeForwardedResponseHeaders:
         assert "transfer-encoding" not in cleaned
         assert cleaned["request-id"] == "req_abc"
 
+    def test_drops_connection_nominated_and_standard_hop_headers(self):
+        headers = httpx.Headers(
+            [
+                ("Connection", "X-Proxy-Note"),
+                ("connection", " Upgrade, x-Second-Hop "),
+                ("X-Proxy-Note", "connection-local"),
+                ("x-second-hop", "also-local"),
+                ("Upgrade", "h2c"),
+                ("TE", "trailers"),
+                ("Trailer", "Digest"),
+                ("Proxy-Authenticate", "Basic realm=proxy"),
+                ("Proxy-Authorization", "Basic local"),
+                ("X-Request-ID", "keep"),
+            ]
+        )
+        assert sanitize_forwarded_response_headers(headers) == {"x-request-id": "keep"}
+        assert headers["x-proxy-note"] == "connection-local"
+
 
 # --------------------------------------------------------------------------
 # 2. Replaying a poisoned cache entry
