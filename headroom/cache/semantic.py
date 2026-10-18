@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -73,6 +74,9 @@ class CacheEntry:
 
     # Hash of the full messages for exact matching
     messages_hash: str = ""
+
+    # Response producer namespace; empty for standalone unscoped callers.
+    scope: str = ""
 
 
 @dataclass
@@ -122,8 +126,8 @@ class SemanticCache:
         # LRU cache: key -> CacheEntry
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
 
-        # Exact hash index: messages_hash -> key
-        self._hash_index: dict[str, str] = {}
+        # Exact hash index: (scope, messages_hash) -> key
+        self._hash_index: dict[tuple[str, str], str] = {}
 
         # Statistics
         self._hits = 0
@@ -134,6 +138,8 @@ class SemanticCache:
         self,
         query: str,
         messages_hash: str | None = None,
+        *,
+        scope: str = "",
     ) -> CacheEntry | None:
         """
         Look up a cached entry.
@@ -141,6 +147,7 @@ class SemanticCache:
         Args:
             query: Query text to search for
             messages_hash: Optional exact hash for fast lookup
+            scope: Response-producer namespace for exact and semantic matches
 
         Returns:
             CacheEntry if found, None otherwise
@@ -149,13 +156,13 @@ class SemanticCache:
 
         # Try exact hash match first
         if messages_hash and self.config.use_exact_matching:
-            key = self._hash_index.get(messages_hash)
+            key = self._hash_index.get((scope, messages_hash))
             if key and key in self._cache:
                 entry = self._cache[key]
                 # Verify the stored entry really belongs to this request. Guards
                 # against a stale index mapping ever pointing at an entry that was
                 # overwritten by a different conversation sharing the same key.
-                if entry.messages_hash == messages_hash:
+                if entry.messages_hash == messages_hash and entry.scope == scope:
                     self._touch(key)
                     self._hits += 1
                     return entry
@@ -173,7 +180,7 @@ class SemanticCache:
         # messages_hash above, which is context-complete and safe.
         if self._embedding_fn and query.strip():
             query_embedding = self._embedding_fn(query)
-            best_match, best_similarity = self._find_similar(query_embedding)
+            best_match, best_similarity = self._find_similar(query_embedding, scope)
 
             if best_similarity >= self.config.similarity_threshold:
                 self._touch(best_match)
@@ -188,6 +195,8 @@ class SemanticCache:
         query: str,
         response: Any,
         messages_hash: str | None = None,
+        *,
+        scope: str = "",
     ) -> str:
         """
         Store a response in the cache.
@@ -196,6 +205,7 @@ class SemanticCache:
             query: Query text
             response: Response to cache
             messages_hash: Optional exact hash for fast lookup
+            scope: Response-producer namespace, also required on lookup
 
         Returns:
             Cache key for the entry
@@ -208,6 +218,8 @@ class SemanticCache:
         # overwrite each other. Fall back to the query hash only when no
         # messages_hash is supplied (e.g. embedding-only usage).
         key = messages_hash or self._generate_key(query)
+        if scope:
+            key = f"{len(scope)}:{scope}:{key}"
 
         # Evict if adding a NEW key would exceed capacity. Overwriting a key that
         # is already present is an in-place update that does not grow the map, so
@@ -235,13 +247,14 @@ class SemanticCache:
             created_at=now,
             last_accessed=now,
             messages_hash=messages_hash or "",
+            scope=scope,
         )
 
         self._cache[key] = entry
 
         # Index by hash for fast exact matching
         if messages_hash:
-            self._hash_index[messages_hash] = key
+            self._hash_index[(scope, messages_hash)] = key
 
         return key
 
@@ -250,7 +263,7 @@ class SemanticCache:
         if key in self._cache:
             entry = self._cache.pop(key)
             if entry.messages_hash:
-                self._hash_index.pop(entry.messages_hash, None)
+                self._hash_index.pop((entry.scope, entry.messages_hash), None)
             return True
         return False
 
@@ -276,13 +289,14 @@ class SemanticCache:
     def _find_similar(
         self,
         query_embedding: list[float],
+        scope: str,
     ) -> tuple[str, float]:
         """Find the most similar cached entry."""
         best_key = ""
         best_similarity = -1.0
 
         for key, entry in self._cache.items():
-            if not entry.embedding:
+            if entry.scope != scope or not entry.embedding:
                 continue
 
             similarity = self._cosine_similarity(query_embedding, entry.embedding)
@@ -325,7 +339,7 @@ class SemanticCache:
         if self._cache:
             key, entry = self._cache.popitem(last=False)
             if entry.messages_hash:
-                self._hash_index.pop(entry.messages_hash, None)
+                self._hash_index.pop((entry.scope, entry.messages_hash), None)
             self._evictions += 1
 
     def _cleanup_expired(self) -> None:
@@ -343,7 +357,7 @@ class SemanticCache:
         for key in expired:
             entry = self._cache.pop(key)
             if entry.messages_hash:
-                self._hash_index.pop(entry.messages_hash, None)
+                self._hash_index.pop((entry.scope, entry.messages_hash), None)
 
     def _generate_key(self, query: str) -> str:
         """Generate a cache key for a query."""
@@ -356,6 +370,9 @@ class SemanticCacheLayer:
 
     This layer checks for semantically similar queries before
     delegating to the underlying provider optimizer.
+
+    Provider, model, and JSON context metadata fence both matching paths.
+    Request IDs and timestamps do not change response identity.
     """
 
     def __init__(
@@ -406,8 +423,12 @@ class SemanticCacheLayer:
         query = context.query or self._extract_query(messages)
         messages_hash = self._compute_messages_hash(messages)
 
-        # Check semantic cache
-        cached = self.cache.get(query, messages_hash)
+        scope = self._compute_scope(context)
+        cached = (
+            self.cache.get(query, messages_hash, scope=scope)
+            if scope is not None and messages_hash
+            else None
+        )
         if cached:
             return CacheResult(
                 messages=messages,
@@ -430,7 +451,7 @@ class SemanticCacheLayer:
         messages: list[dict[str, Any]],
         response: Any,
         context: OptimizationContext | None = None,
-    ) -> str:
+    ) -> str | None:
         """
         Store a response in the semantic cache.
 
@@ -440,15 +461,19 @@ class SemanticCacheLayer:
         Args:
             messages: Original messages
             response: Response from LLM
-            context: Optional context with query
+            context: Provider/model identity, query, and JSON metadata. Omitted
+                context uses an unnamed scope and cannot match a named model.
 
         Returns:
-            Cache key
+            Cache key, or None if messages or context cannot be serialized
         """
         query = (context.query if context else None) or self._extract_query(messages)
         messages_hash = self._compute_messages_hash(messages)
 
-        return self.cache.put(query, response, messages_hash)
+        scope = self._compute_scope(context)
+        if scope is None or not messages_hash:
+            return None
+        return self.cache.put(query, response, messages_hash, scope=scope)
 
     def get_stats(self) -> dict[str, Any]:
         """Get combined statistics."""
@@ -473,10 +498,21 @@ class SemanticCacheLayer:
 
     def _compute_messages_hash(self, messages: list[dict[str, Any]]) -> str:
         """Compute a hash of all messages."""
-        import json
-
         try:
             content = json.dumps(messages, sort_keys=True)
             return hashlib.sha256(content.encode()).hexdigest()[:24]
         except (TypeError, ValueError):
             return ""
+
+    def _compute_scope(self, context: OptimizationContext | None) -> str | None:
+        """Hash producer identity and metadata, excluding request tracking."""
+        identity = (
+            (context.provider, context.model, context.metadata)
+            if context is not None
+            else ("", "", {})
+        )
+        try:
+            content = json.dumps(identity, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError):
+            return None
+        return hashlib.sha256(content.encode()).hexdigest()

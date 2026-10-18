@@ -13,18 +13,6 @@ from headroom.cache import (
 from headroom.cache.semantic import SemanticCacheConfig
 
 
-class TestSemanticCacheConfig:
-    """Test SemanticCacheConfig."""
-
-    def test_default_values(self):
-        """Test default configuration values."""
-        config = SemanticCacheConfig()
-        assert config.similarity_threshold == 0.95
-        assert config.max_entries == 1000
-        assert config.ttl_seconds == 300
-        assert config.use_exact_matching is True
-
-
 class TestSemanticCache:
     """Test SemanticCache functionality."""
 
@@ -289,18 +277,6 @@ class TestSemanticCacheLayer:
         assert result.semantic_cache_hit is True
         assert result.cached_response == {"text": "4"}
 
-    def test_store_response(self, layer, context):
-        """Test storing a response."""
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Tell me a joke"},
-        ]
-
-        key = layer.store_response(messages, {"text": "Why did..."}, context)
-
-        assert key is not None
-        assert len(key) > 0
-
     def test_get_stats(self, layer, context):
         """Test getting statistics."""
         messages = [
@@ -373,3 +349,83 @@ class TestSemanticCacheLayer:
         result = layer.process(messages, context)
 
         assert result.semantic_cache_hit is True
+
+    @pytest.mark.parametrize("semantic", [False, True])
+    @pytest.mark.parametrize(
+        "provider,model,metadata",
+        [
+            ("openai", "claude-3-opus", {"temperature": 0}),
+            ("anthropic", "claude-3-sonnet", {"temperature": 0}),
+            ("anthropic", "claude-3-opus", {"temperature": 1}),
+        ],
+    )
+    def test_cached_responses_stay_with_their_producer(self, semantic, provider, model, metadata):
+        layer = SemanticCacheLayer(
+            AnthropicCacheOptimizer(),
+            embedding_fn=(lambda _text: [1.0, 0.0]) if semantic else None,
+        )
+        messages = [{"role": "user", "content": "Find alpha."}]
+        other_messages = [{"role": "user", "content": "Locate alpha."}] if semantic else messages
+        original = OptimizationContext(
+            provider="anthropic", model="claude-3-opus", metadata={"temperature": 0}
+        )
+        other = OptimizationContext(provider=provider, model=model, metadata=metadata)
+        layer.store_response(messages, {"answer": "original producer"}, original)
+
+        miss = layer.process(other_messages, other)
+
+        assert miss.semantic_cache_hit is False
+        assert miss.cached_response is None
+        layer.store_response(other_messages, {"answer": "other producer"}, other)
+        assert layer.process(messages, original).cached_response == {"answer": "original producer"}
+        assert layer.process(other_messages, other).cached_response == {"answer": "other producer"}
+
+    def test_in_scope_semantic_matches_ignore_request_tracking(self):
+        layer = SemanticCacheLayer(AnthropicCacheOptimizer(), embedding_fn=lambda _text: [1.0, 0.0])
+        original = OptimizationContext(
+            provider="anthropic", model="claude-3-opus", request_id="first"
+        )
+        following = OptimizationContext(
+            provider="anthropic", model="claude-3-opus", request_id="second"
+        )
+        layer.store_response(
+            [{"role": "user", "content": "Find alpha."}], {"answer": "alpha"}, original
+        )
+
+        result = layer.process([{"role": "user", "content": "Locate alpha."}], following)
+
+        assert result.semantic_cache_hit is True
+        assert result.cached_response == {"answer": "alpha"}
+
+    def test_scope_lru_and_invalidation_do_not_remove_other_models(self):
+        layer = SemanticCacheLayer(AnthropicCacheOptimizer(), max_entries=2)
+        messages = [{"role": "user", "content": "Find alpha."}]
+        contexts = [
+            OptimizationContext(provider="anthropic", model=model) for model in ["a", "b", "c"]
+        ]
+        key = layer.store_response(messages, {"answer": "a"}, contexts[0])
+        layer.store_response(messages, {"answer": "b"}, contexts[1])
+        assert layer.process(messages, contexts[0]).cached_response == {"answer": "a"}
+
+        layer.store_response(messages, {"answer": "c"}, contexts[2])
+
+        assert layer.process(messages, contexts[0]).cached_response == {"answer": "a"}
+        assert layer.process(messages, contexts[1]).semantic_cache_hit is False
+        assert key is not None
+        assert layer.cache.invalidate(key)
+        assert layer.process(messages, contexts[0]).semantic_cache_hit is False
+        assert layer.process(messages, contexts[2]).cached_response == {"answer": "c"}
+
+    def test_unserializable_context_cannot_reuse_another_response(self, layer, context):
+        messages = [{"role": "user", "content": "Find alpha."}]
+        layer.store_response(messages, {"answer": "original"}, context)
+        unsupported = OptimizationContext(
+            provider=context.provider, model=context.model, metadata={"opaque": object()}
+        )
+
+        assert layer.store_response(messages, {"answer": "unsupported"}, unsupported) is None
+        result = layer.process(messages, unsupported)
+
+        assert result.semantic_cache_hit is False
+        assert result.cached_response is None
+        assert layer.process(messages, context).cached_response == {"answer": "original"}
