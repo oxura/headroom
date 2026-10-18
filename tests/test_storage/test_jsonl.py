@@ -1,5 +1,6 @@
 """Tests for JSONL storage query paging (shared newest-first contract)."""
 
+import sqlite3
 from datetime import datetime, timedelta
 
 import pytest
@@ -244,3 +245,73 @@ class TestJSONLQuerySingleRowRegression:
 
         jsonl.close()
         sqlite.close()
+
+
+@pytest.mark.parametrize("storage_type", [JSONLStorage, SQLiteStorage])
+def test_cache_optimization_measurements_survive_reopen(tmp_path, storage_type):
+    path = str(tmp_path / "cache-metrics")
+    expected = _metrics("cached", datetime(2026, 10, 18))
+    expected.cache_optimizer_used = "anthropic-cache-optimizer"
+    expected.cache_optimizer_strategy = "explicit_breakpoints"
+    expected.cacheable_tokens = 789
+    expected.breakpoints_inserted = 2
+    expected.estimated_cache_hit = True
+    expected.estimated_savings_percent = 42.5
+    expected.semantic_cache_hit = True
+    storage = storage_type(path)
+    storage.save(expected)
+    storage.close()
+
+    reopened = storage_type(path)
+    try:
+        assert reopened.get("cached") == expected
+        assert reopened.query(model="gpt-4o") == [expected]
+    finally:
+        reopened.close()
+
+
+def test_sqlite_upgrades_legacy_rows_without_losing_metrics(tmp_path):
+    path = str(tmp_path / "legacy.db")
+    with sqlite3.connect(path) as conn:
+        conn.execute("""
+            CREATE TABLE requests (
+                id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, model TEXT NOT NULL,
+                stream INTEGER NOT NULL, mode TEXT NOT NULL,
+                tokens_input_before INTEGER NOT NULL, tokens_input_after INTEGER NOT NULL,
+                tokens_output INTEGER, block_breakdown TEXT NOT NULL,
+                waste_signals TEXT NOT NULL, stable_prefix_hash TEXT,
+                cache_alignment_score REAL, cached_tokens INTEGER,
+                transforms_applied TEXT NOT NULL, tool_units_dropped INTEGER DEFAULT 0,
+                turns_dropped INTEGER DEFAULT 0, messages_hash TEXT, error TEXT
+            )
+        """)
+        conn.execute("""
+            INSERT INTO requests (
+                id, timestamp, model, stream, mode, tokens_input_before,
+                tokens_input_after, block_breakdown, waste_signals, transforms_applied
+            ) VALUES (
+                'legacy', '2026-10-17T00:00:00Z', 'claude', 0, 'audit',
+                123, 45, '{}', '{}', '[]'
+            )
+        """)
+    expected = _metrics("new", datetime(2026, 10, 18))
+    expected.cache_optimizer_used = "anthropic-cache-optimizer"
+    expected.cacheable_tokens = 789
+    expected.estimated_cache_hit = True
+    expected.estimated_savings_percent = 42.5
+    storage = SQLiteStorage(path)
+    storage.save(expected)
+    storage.close()
+
+    reopened = SQLiteStorage(path)
+    try:
+        legacy = reopened.get("legacy")
+        assert legacy is not None
+        assert (legacy.model, legacy.tokens_input_before, legacy.tokens_input_after) == (
+            "claude",
+            123,
+            45,
+        )
+        assert reopened.get("new") == expected
+    finally:
+        reopened.close()

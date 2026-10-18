@@ -51,6 +51,13 @@ class SQLiteStorage(Storage):
                     stable_prefix_hash TEXT,
                     cache_alignment_score REAL,
                     cached_tokens INTEGER,
+                    cache_optimizer_used TEXT,
+                    cache_optimizer_strategy TEXT,
+                    cacheable_tokens INTEGER NOT NULL DEFAULT 0,
+                    breakpoints_inserted INTEGER NOT NULL DEFAULT 0,
+                    estimated_cache_hit INTEGER NOT NULL DEFAULT 0,
+                    estimated_savings_percent REAL NOT NULL DEFAULT 0,
+                    semantic_cache_hit INTEGER NOT NULL DEFAULT 0,
                     transforms_applied TEXT NOT NULL,
                     tool_units_dropped INTEGER DEFAULT 0,
                     turns_dropped INTEGER DEFAULT 0,
@@ -58,6 +65,24 @@ class SQLiteStorage(Storage):
                     error TEXT
                 )
             """)
+
+            cache_columns = {
+                "cache_optimizer_used": "TEXT",
+                "cache_optimizer_strategy": "TEXT",
+                "cacheable_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "breakpoints_inserted": "INTEGER NOT NULL DEFAULT 0",
+                "estimated_cache_hit": "INTEGER NOT NULL DEFAULT 0",
+                "estimated_savings_percent": "REAL NOT NULL DEFAULT 0",
+                "semantic_cache_hit": "INTEGER NOT NULL DEFAULT 0",
+            }
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(requests)")}
+            if any(name not in columns for name in cache_columns):
+                # Serialize legacy upgrades and recheck after acquiring the write lock.
+                cursor.execute("BEGIN IMMEDIATE")
+                columns = {row[1] for row in cursor.execute("PRAGMA table_info(requests)")}
+                for name, declaration in cache_columns.items():
+                    if name not in columns:
+                        cursor.execute(f"ALTER TABLE requests ADD COLUMN {name} {declaration}")
 
             # Create indices
             cursor.execute("""
@@ -93,9 +118,13 @@ class SQLiteStorage(Storage):
                 tokens_input_before, tokens_input_after, tokens_output,
                 block_breakdown, waste_signals,
                 stable_prefix_hash, cache_alignment_score, cached_tokens,
+                cache_optimizer_used, cache_optimizer_strategy, cacheable_tokens,
+                breakpoints_inserted, estimated_cache_hit, estimated_savings_percent,
+                semantic_cache_hit,
                 transforms_applied, tool_units_dropped, turns_dropped,
                 messages_hash, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 metrics.request_id,
@@ -111,6 +140,13 @@ class SQLiteStorage(Storage):
                 metrics.stable_prefix_hash,
                 metrics.cache_alignment_score,
                 metrics.cached_tokens,
+                metrics.cache_optimizer_used,
+                metrics.cache_optimizer_strategy,
+                metrics.cacheable_tokens,
+                metrics.breakpoints_inserted,
+                1 if metrics.estimated_cache_hit else 0,
+                metrics.estimated_savings_percent,
+                1 if metrics.semantic_cache_hit else 0,
                 json.dumps(metrics.transforms_applied),
                 metrics.tool_units_dropped,
                 metrics.turns_dropped,
@@ -301,6 +337,13 @@ class SQLiteStorage(Storage):
             stable_prefix_hash=row["stable_prefix_hash"] or "",
             cache_alignment_score=row["cache_alignment_score"] or 0.0,
             cached_tokens=row["cached_tokens"],
+            cache_optimizer_used=row["cache_optimizer_used"],
+            cache_optimizer_strategy=row["cache_optimizer_strategy"],
+            cacheable_tokens=row["cacheable_tokens"],
+            breakpoints_inserted=row["breakpoints_inserted"],
+            estimated_cache_hit=bool(row["estimated_cache_hit"]),
+            estimated_savings_percent=row["estimated_savings_percent"],
+            semantic_cache_hit=bool(row["semantic_cache_hit"]),
             transforms_applied=json.loads(row["transforms_applied"]),
             tool_units_dropped=row["tool_units_dropped"] or 0,
             turns_dropped=row["turns_dropped"] or 0,

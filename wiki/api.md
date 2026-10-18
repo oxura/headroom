@@ -131,7 +131,9 @@ class SimulationResult:
 
 ### RequestMetrics
 
-Metrics for a single request.
+Metrics for a single request. Saved JSONL records and SQLite rows include cache
+optimization measurements and semantic-cache hits. Existing SQLite databases are
+upgraded in place without dropping their records.
 
 ```python
 @dataclass
@@ -141,9 +143,14 @@ class RequestMetrics:
     model: str
     tokens_input_before: int
     tokens_input_after: int
-    tokens_output: int
-    cost_before: float
-    cost_after: float
+    tokens_output: int | None
+    cache_optimizer_used: str | None
+    cache_optimizer_strategy: str | None
+    cacheable_tokens: int
+    breakpoints_inserted: int
+    estimated_cache_hit: bool
+    estimated_savings_percent: float
+    semantic_cache_hit: bool
     transforms_applied: list[str]
 ```
 
