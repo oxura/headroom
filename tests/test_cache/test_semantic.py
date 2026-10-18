@@ -1,6 +1,10 @@
 """Tests for SemanticCache and SemanticCacheLayer."""
 
+import subprocess
+import sys
 import time
+from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -237,6 +241,40 @@ class TestSemanticCache:
         # A whitespace-only query is treated the same as empty.
         cache.put("   \n\t", "response-C", messages_hash="ctxC")
         assert cache.get("   ", messages_hash="ctxD") is None
+
+    @pytest.mark.parametrize("capacity", [0, -1])
+    def test_nonpositive_capacity_rejects_writes_without_losing_entries(self, capacity):
+        program = dedent(
+            f"""
+            from headroom.cache import SemanticCache
+            from headroom.cache.semantic import SemanticCacheConfig
+
+            config = SemanticCacheConfig(max_entries=2, ttl_seconds=0)
+            cache = SemanticCache(config)
+            cache.put("old query", "old response", messages_hash="old")
+            config.max_entries = {capacity}
+            try:
+                cache.put("new query", "new response", messages_hash="new")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("nonpositive capacity was accepted")
+            assert cache.get("old query", messages_hash="old").response == "old response"
+            config.max_entries = 2
+            cache.put("new query", "new response", messages_hash="new")
+            assert cache.get("old query", messages_hash="old").response == "old response"
+            assert cache.get("new query", messages_hash="new").response == "new response"
+            """
+        )
+
+        subprocess.run(
+            [sys.executable, "-c", program],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
 
 class TestSemanticCacheLayer:
