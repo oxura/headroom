@@ -400,21 +400,37 @@ def _transient_system_lineage_enabled() -> bool:
     )
 
 
-def _extends_past_system_tail(current_messages: list[Any], previous_messages: list[Any]) -> bool:
-    """Whether ``current`` continues ``previous`` once its trailing system turn is set aside.
+def _extends_past_transient_tail(current_messages: list[Any], previous_messages: list[Any]) -> bool:
+    """Whether ``current`` continues after a request-only trailing reminder.
 
-    Claude Code ends some requests with a ``role:"system"`` reminder and
-    replaces it on the next turn, so the recorded history is never a prefix of
-    the new one.  Only that last message is excluded: everything before it
-    must survive unchanged and include real user/assistant history, so a
-    changed leading or historical system instruction still diverges, and the
-    new history must be longer, so a sibling that only swaps the final
-    instruction is not a continuation.
+    Clients may replace a system reminder or drop a text-only user reminder
+    on the next request. Only that last message is excluded: earlier history
+    must survive unchanged and contain real user/assistant turns. Tool blocks
+    are never set aside. A longer history is required, so swapping only the
+    reminder cannot merge sibling conversations.
     """
     if len(previous_messages) < 2 or len(current_messages) <= len(previous_messages):
         return False
     tail = previous_messages[-1]
-    if not isinstance(tail, dict) or tail.get("role") != "system":
+    if not isinstance(tail, dict):
+        return False
+    role = tail.get("role")
+    if role == "user":
+        content = tail.get("content")
+        if not (
+            isinstance(content, str)
+            or (
+                isinstance(content, list)
+                and all(
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                    for block in content
+                )
+            )
+        ):
+            return False
+    elif role != "system":
         return False
     stable = previous_messages[:-1]
     return current_messages[: len(stable)] == stable and any(
@@ -423,12 +439,12 @@ def _extends_past_system_tail(current_messages: list[Any], previous_messages: li
     )
 
 
-def _replaced_system_tail_delta(
+def _replaced_transient_tail_delta(
     current_messages: list[dict[str, Any]],
     previous_original_messages: list[dict[str, Any]],
     previous_forwarded_messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
-    """Cache-stable split for a request that replaced the previous trailing system turn.
+    """Cache-stable split after a request-only trailing reminder is replaced.
 
     The handlers record the model's reply after the request it answered, so the
     replaced reminder is the last recorded message or sits right before that
@@ -450,7 +466,7 @@ def _replaced_system_tail_delta(
             continue
         reminder = request_len - 1
         if (
-            _extends_past_system_tail(current, previous[:request_len])
+            _extends_past_transient_tail(current, previous[:request_len])
             and current[reminder : reminder + len(reply)] == reply
         ):
             return (
@@ -581,15 +597,15 @@ def extract_cache_stable_delta(
     bytes verbatim and the delta is the raw appended messages — never a rebuild from the
     canonical projection — so the projection dropping non-semantic fields is safe.
 
-    A previous request that ended in a ``role:"system"`` reminder the client has since
-    replaced also qualifies: its forwarded bytes are replayed without that reminder
+    A trailing system reminder or text-only user reminder that the client has
+    replaced also qualifies: replay excludes that reminder, never tool blocks
     (``HEADROOM_TRANSIENT_SYSTEM_LINEAGE=0`` disables this).
     """
     if not previous_original_messages or previous_forwarded_messages is None:
         return None
     relation = classify_history_relation(current_messages, previous_original_messages)
     if relation.kind == RELATION_DIVERGED:
-        return _replaced_system_tail_delta(
+        return _replaced_transient_tail_delta(
             current_messages, previous_original_messages, previous_forwarded_messages
         ) or _client_rewrote_reply_delta(
             current_messages, previous_original_messages, previous_forwarded_messages
@@ -1721,7 +1737,7 @@ class SessionTrackerStore:
         the middle tail is regenerated; all other rewrites start a fresh
         lineage. This keeps #2671's stable cache boundary attached without
         merging unrelated parallel sub-calls. When nothing else matches, an
-        Anthropic chain whose trailing ``role:"system"`` reminder the client
+        Anthropic chain whose trailing system or text-only user reminder was
         replaced is matched on the history before that reminder
         (``HEADROOM_TRANSIENT_SYSTEM_LINEAGE=0`` disables this).
         Byte-identical histories (templated fan-outs before they diverge)
@@ -1855,7 +1871,7 @@ class SessionTrackerStore:
                 and _transient_system_lineage_enabled()
             ):
                 # Nothing matched as recorded.  A chain whose only change is
-                # its replaced trailing system reminder is still this
+                # its replaced request-only reminder is still this
                 # conversation; without it every such turn starts a cold
                 # tracker, the confirmed prefix is not replayed, and any
                 # recompressed history re-writes the provider cache.  Only a
@@ -1865,7 +1881,7 @@ class SessionTrackerStore:
                     (len(chain), key)
                     for key, chain in by_length
                     if self._lineage_affinities.get(key) == cache_affinity
-                    and _extends_past_system_tail(snap, chain)
+                    and _extends_past_transient_tail(snap, chain)
                 ]
                 if tail_candidates and (
                     len(tail_candidates) == 1 or tail_candidates[0][0] != tail_candidates[1][0]

@@ -1,6 +1,7 @@
 """Tests for PrefixCacheTracker — cache-aware compression."""
 
 import contextvars
+import copy
 import time
 
 import pytest
@@ -1392,3 +1393,92 @@ class TestClassifyCacheMiss:
             ).resolved_cache_ttl_seconds()
             == 3600
         )
+
+
+def _user_tail_replay_case(tail_content):
+    stable = [
+        {"role": "system", "content": "Stable project instructions."},
+        {"role": "user", "content": "Inspect the files."},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "read-1", "name": "Read", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "read-1", "content": '{\n  "ok": true\n}'}
+            ],
+        },
+        {"role": "assistant", "content": "First inspection finished."},
+        {"role": "user", "content": "Continue the inspection."},
+    ]
+    previous = stable + [{"role": "user", "content": tail_content}]
+    forwarded = copy.deepcopy(previous)
+    forwarded[3]["content"][0]["content"] = '{"ok":true}'
+    reply = {
+        "role": "assistant",
+        "content": [{"type": "tool_use", "id": "read-2", "name": "Read", "input": {}}],
+    }
+    added = {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "read-2", "content": "second result"}],
+    }
+    store = SessionTrackerStore()
+    tracker = store.resolve_tracker("sid", "anthropic", previous, cache_affinity="tools-a")
+    tracker.update_from_response(
+        cache_read_tokens=0,
+        cache_write_tokens=5000,
+        messages=forwarded + [reply],
+        original_messages=previous + [reply],
+        message_token_counts=[100] * (len(previous) + 1),
+    )
+    return store, tracker, stable + [reply, added], added
+
+
+@pytest.mark.parametrize("tail", ["Request-only notes.", [{"type": "text", "text": "Notes."}]])
+def test_replaced_text_user_tail_replays_cached_tool_bytes(tail):
+    store, tracker, current, added = _user_tail_replay_case(tail)
+    resolved = store.resolve_tracker("sid", "anthropic", current, cache_affinity="tools-a")
+    delta = extract_cache_stable_delta(
+        current, resolved.get_last_original_messages(), resolved.get_last_forwarded_messages()
+    )
+    assert delta is not None
+    prefix, new_messages = delta
+    assert prefix[3]["content"][0]["content"] == '{"ok":true}'
+    assert new_messages == [added]
+    assert current[3]["content"][0]["content"] == '{\n  "ok": true\n}'
+    assert resolved.get_frozen_message_count() == tracker.get_frozen_message_count()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        [
+            {"type": "text", "text": "Notes."},
+            {"type": "tool_result", "tool_use_id": "x", "content": "x"},
+        ],
+        [{"type": "image", "source": {"type": "base64", "data": "AA=="}}],
+        [{"type": "text", "text": None}],
+    ],
+)
+def test_replaced_non_text_user_tail_does_not_replay(tail):
+    store, _, current, _ = _user_tail_replay_case(tail)
+    resolved = store.resolve_tracker("sid", "anthropic", current, cache_affinity="tools-a")
+    assert resolved.get_frozen_message_count() == 0
+    assert (
+        extract_cache_stable_delta(
+            current, resolved.get_last_original_messages(), resolved.get_last_forwarded_messages()
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("changed_affinity", [False, True])
+def test_user_tail_replay_respects_kill_switch_and_affinity(monkeypatch, changed_affinity):
+    store, _, current, _ = _user_tail_replay_case("Request-only notes.")
+    if not changed_affinity:
+        monkeypatch.setenv("HEADROOM_TRANSIENT_SYSTEM_LINEAGE", "0")
+    resolved = store.resolve_tracker(
+        "sid", "anthropic", current, cache_affinity="tools-b" if changed_affinity else "tools-a"
+    )
+    assert resolved.get_frozen_message_count() == 0

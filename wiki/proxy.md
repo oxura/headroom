@@ -99,6 +99,12 @@ When to pick each:
 - `token`: best for maximizing immediate compression savings.
 - `cache`: best for long conversations where preserving prior-turn bytes improves prefix-cache reuse.
 
+Cache-mode replay can continue when a request-only, text-only user reminder
+disappears before new turns. The unchanged history and tool pairs still have to
+match; tool-result or image tails, changed provider/tool affinity, and ambiguous
+branches do not qualify. `HEADROOM_TRANSIENT_SYSTEM_LINEAGE=0` disables this
+transient-tail matching.
+
 Legacy values (`token_headroom`, `cost_savings`) are still accepted as aliases.
 
 ### Context Management Options
