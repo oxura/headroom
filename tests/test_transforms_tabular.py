@@ -7,12 +7,15 @@ ingestion (spreadsheet_ingest / compress_spreadsheet).
 
 from __future__ import annotations
 
+import csv
 import datetime
 import importlib.util
+import io
 import random
 
 import pytest
 
+from headroom.transforms.compaction_codec import expand_compacted
 from headroom.transforms.content_detector import (
     ContentType,
     DetectionResult,
@@ -258,6 +261,24 @@ def test_parse_csv_and_records() -> None:
     assert records[1] == {"name": "Bob", "age": "25", "city": "LA"}
 
 
+@pytest.mark.parametrize("delimiter", [",", "\t"])
+def test_parse_delimited_preserves_empty_and_whitespace_records(delimiter: str) -> None:
+    expected = [["", ""], ["alpha", "regular"], ["  ", "\t"], ["", ""]]
+    stream = io.StringIO()
+    writer = csv.writer(stream, delimiter=delimiter)
+    writer.writerow(["name", "value"])
+    writer.writerow([])
+    writer.writerows(expected)
+
+    assert parse_csv(stream.getvalue(), delimiter) == (["name", "value"], expected)
+
+
+def test_parse_markdown_preserves_separator_like_body_records() -> None:
+    content = "| a | b |\n| --- | --- |\n| --- | --- |\n| x | y |"
+
+    assert parse_markdown_table(content) == (["a", "b"], [["---", "---"], ["x", "y"]])
+
+
 def test_parse_markdown_table_drops_separator() -> None:
     headers, rows = parse_markdown_table(MARKDOWN)
     assert headers == ["name", "age"]
@@ -391,10 +412,23 @@ def test_parse_tabular_rejects_single_column_fixed_width(monkeypatch) -> None:
     )
 
 
-def test_parse_tabular_none_when_no_data_rows_survive() -> None:
-    # Detected as a markdown table, but it is header + separator rows only:
-    # nothing survives as a data row, so parse_tabular bails to None.
-    assert parse_tabular("| a | b |\n| --- | --- |\n| --- | --- |") is None
+def test_compressed_markdown_preserves_separator_like_body_record() -> None:
+    content = _verbose_markdown() + "\n| --- | --- | --- | --- | --- |"
+    expected = [
+        {
+            "name": f"user_{i}",
+            "age": str(20 + i),
+            "city": f"city_{i % 5}",
+            "status": "active",
+            "dept": "engineering",
+        }
+        for i in range(40)
+    ] + [dict.fromkeys(["name", "age", "city", "status", "dept"], "---")]
+
+    result = TabularCompressor().compress(content)
+
+    assert result.was_modified
+    assert expand_compacted(result.compressed) == expected
 
 
 def test_compression_ratio_zero_for_empty_original() -> None:

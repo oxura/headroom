@@ -64,6 +64,9 @@ class TabularCompressionResult:
 def parse_csv(content: str, delimiter: str = ",") -> tuple[list[str], list[list[str]]]:
     """Parse delimited text via the stdlib csv reader.
 
+    Empty physical lines are ignored; records with empty or whitespace-only
+    fields are retained.
+
     Returns no rows when the reader refuses the text. The one that reaches real
     content is ``csv.field_size_limit``, 128 KB per cell by default: a single
     pasted document or base64 blob in one column raises
@@ -72,9 +75,11 @@ def parse_csv(content: str, delimiter: str = ",") -> tuple[list[str], list[list[
     on its host, so the table is treated as non-tabular instead and the caller
     passes the text through verbatim, as it already does for a ragged table.
     """
+    if not content or content.isspace():
+        return [], []
     reader = csv.reader(io.StringIO(content), delimiter=delimiter)
     try:
-        parsed = [row for row in reader if any(cell.strip() for cell in row)]
+        parsed = [row for row in reader if row]
     except csv.Error:
         return [], []
     if not parsed:
@@ -84,7 +89,10 @@ def parse_csv(content: str, delimiter: str = ",") -> tuple[list[str], list[list[
 
 
 def parse_markdown_table(content: str) -> tuple[list[str], list[list[str]]]:
-    """Parse a markdown table, dropping the ``|---|`` separator row."""
+    """Parse a markdown table, dropping only the delimiter below its header.
+
+    Separator-like rows in the body are data, not additional delimiters.
+    """
 
     def split_row(row: str) -> list[str]:
         return [c.strip() for c in row.strip().strip("|").split("|")]
@@ -97,7 +105,8 @@ def parse_markdown_table(content: str) -> tuple[list[str], list[list[str]]]:
     if len(lines) < 2:
         return [], []
     headers = split_row(lines[0])
-    rows = [split_row(ln) for ln in lines[1:] if not is_separator(ln)]
+    data_start = 2 if is_separator(lines[1]) else 1
+    rows = [split_row(ln) for ln in lines[data_start:]]
     return headers, rows
 
 
