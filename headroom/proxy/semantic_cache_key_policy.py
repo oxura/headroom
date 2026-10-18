@@ -102,26 +102,34 @@ def compute_request_cache_partition(request: Any) -> str | None:
     return compute_cache_partition(headers, principal=principal)
 
 
+_SEMANTIC_PAYLOAD_FIELDS = frozenset(
+    {
+        "arguments",
+        "const",
+        "default",
+        "enum",
+        "example",
+        "examples",
+        "input",
+        "input_schema",
+        "parameters",
+        "properties",
+        "schema",
+        "text",
+    }
+)
+
+
 def strip_cache_control(obj: Any) -> Any:
-    """Recursively drop prompt-cache annotations, preserving schema properties."""
-    return _strip_cache_control(obj, preserve_key=False)
-
-
-def _strip_cache_control(obj: Any, *, preserve_key: bool) -> Any:
-    """Strip directives while retaining names inside JSON Schema ``properties``.
-
-    ``cache_control`` is also a valid user-defined JSON Schema property name.
-    Its value still needs normal recursion because that property's schema may
-    itself contain prompt-cache annotations.
-    """
+    """Drop transport annotations without rewriting model-visible payloads."""
     if isinstance(obj, dict):
         return {
-            k: _strip_cache_control(v, preserve_key=k == "properties")
+            k: v if k in _SEMANTIC_PAYLOAD_FIELDS else strip_cache_control(v)
             for k, v in obj.items()
-            if k != "cache_control" or preserve_key
+            if k != "cache_control"
         }
     if isinstance(obj, list):
-        return [_strip_cache_control(item, preserve_key=False) for item in obj]
+        return [strip_cache_control(item) for item in obj]
     return obj
 
 
@@ -134,13 +142,10 @@ def compute_semantic_cache_key(
 ) -> str:
     """Compute a stable cache key from request content and shaping fields.
 
-    ``cache_control`` is stripped from ``messages`` as well as the shaping
-    fields: it is a prompt-caching directive for the upstream provider that
-    never changes the generated completion, so a moved breakpoint must not
-    fragment the key. Messages are the primary key component and, on the
-    Anthropic path, the most common place a client (e.g. Claude Code) moves a
-    breakpoint between turns, so leaving them un-stripped defeated the strip for
-    the field that matters most.
+    Transport ``cache_control`` directives are ignored in messages and shaping
+    fields, so moving a prompt-cache breakpoint does not fragment the key.
+    Tool arguments, JSON schemas and text payloads retain literal fields with
+    that name: those values can change the generated completion.
 
     ``partition`` (see :func:`compute_cache_partition`) is mandatory: a shared
     proxy must never answer one caller from another caller's cached response.
