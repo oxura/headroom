@@ -82,3 +82,13 @@ def test_casing_is_not_load_order_dependent() -> None:
     lower_first = get_tokenizer("gpt-4o").count_text(CJK)
 
     assert upper_first == lower_first
+
+
+def test_chatgpt_alias_counts_text_with_the_provider_encoding() -> None:
+    tiktoken = pytest.importorskip("tiktoken")
+    text = "日本語の文章を正確に数えます。中文文本和한국어도포함합니다。" * 30
+    expected = len(tiktoken.encoding_for_model("chatgpt-4o-latest").encode(text))
+    TokenizerRegistry.clear_cache()
+    assert get_tokenizer("chatgpt-4o-latest").count_text(text) == expected
+    TokenizerRegistry.clear_cache()
+    assert get_tokenizer("CHATGPT-4O-LATEST").count_text(text) == expected

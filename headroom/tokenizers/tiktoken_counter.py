@@ -3,7 +3,7 @@
 Tiktoken is OpenAI's fast BPE tokenizer used by GPT models.
 It supports multiple encodings:
 - cl100k_base: GPT-4, GPT-3.5-turbo, text-embedding-ada-002
-- o200k_base: GPT-4o, GPT-4o-mini
+- o200k_base: GPT-4o, GPT-4o-mini, and ChatGPT-4o aliases
 - p50k_base: Codex models, text-davinci-002/003
 - r50k_base: GPT-3 models (davinci, curie, etc.)
 """
@@ -184,6 +184,7 @@ def get_encoding_for_model(model: str) -> str:
     # o200k_base instead of cl100k_base for unknown gpt-4 snapshots.
     for prefix, encoding in (
         ("gpt-4o", "o200k_base"),
+        ("chatgpt-4o-", "o200k_base"),
         # gpt-4.1 / gpt-4.5 use o200k_base and MUST precede the "gpt-4" prefix,
         # which they would otherwise match and be mis-encoded as cl100k_base.
         ("gpt-4.1", "o200k_base"),
