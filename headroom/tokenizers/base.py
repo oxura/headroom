@@ -98,9 +98,9 @@ class TokenCountCache:
 def coerce_countable_text(value: Any) -> str:
     """Return *value* as text safe to pass to ``count_text``.
 
-    Tool-call fields (``function.name``, ``function.arguments``, ``id``) are
-    strings per the OpenAI spec, but OpenAI-compatible upstreams do emit
-    ``None`` or a raw object there. Passing those straight to
+    Message text/name fields and tool-call fields (``function.name``,
+    ``function.arguments``, ``id``) are strings per their APIs, but compatible
+    upstreams also emit ``None`` or structured values. Passing those straight to
     ``tiktoken.encode()`` raises ``TypeError: expected string or buffer``, which
     failed the whole compression with a 503 — and kept failing on every later
     request, because the malformed message stays in conversation history.
@@ -211,7 +211,7 @@ class BaseTokenizer(ABC):
 
             # Count role
             role = message.get("role", "")
-            total += self.count_text(role)
+            total += self.count_text(coerce_countable_text(role))
 
             # Count content
             content = message.get("content")
@@ -235,7 +235,7 @@ class BaseTokenizer(ABC):
             # Count name field
             name = message.get("name")
             if name:
-                total += self.count_text(name)
+                total += self.count_text(coerce_countable_text(name))
                 total += 1  # Name field overhead
 
         # Reply start overhead
@@ -248,6 +248,7 @@ class BaseTokenizer(ABC):
 
         Handles both Anthropic format ({"type": "text", "text": "..."})
         and Strands SDK format ({"text": "..."} without "type" field).
+        Non-string text fields use bounded text coercion without mutating the input.
         """
         total = 0
         for part in parts:
@@ -255,7 +256,7 @@ class BaseTokenizer(ABC):
                 part_type = part.get("type", "")
 
                 if part_type == "text":
-                    total += self.count_text(part.get("text", ""))
+                    total += self.count_text(coerce_countable_text(part.get("text", "")))
                 elif part_type in ("image_url", "image", "input_image"):
                     # Images are NOT tokenized as text — they have a pixel-based cost.
                     # Anthropic: tokens = (width * height) / 750, max ~1600 after resize.
@@ -281,15 +282,15 @@ class BaseTokenizer(ABC):
                     else:
                         total += self._count_serialized(content)
                 elif part_type == "tool_use":
-                    total += self.count_text(part.get("name", ""))
+                    total += self.count_text(coerce_countable_text(part.get("name", "")))
                     total += self._count_serialized(part.get("input", {}))
                 elif not part_type and "text" in part:
                     # Strands SDK format: {"text": "..."} without "type" field
-                    total += self.count_text(part["text"])
+                    total += self.count_text(coerce_countable_text(part["text"]))
                 elif not part_type and "toolUse" in part:
                     # Strands SDK tool_use: {"toolUse": {"name": ..., "input": ...}}
                     tool_use = part["toolUse"]
-                    total += self.count_text(tool_use.get("name", ""))
+                    total += self.count_text(coerce_countable_text(tool_use.get("name", "")))
                     total += self._count_serialized(tool_use.get("input", {}))
                 elif not part_type and "toolResult" in part:
                     # Strands SDK tool_result: {"toolResult": {"content": [...]}}
@@ -308,7 +309,9 @@ class BaseTokenizer(ABC):
                     reasoning = part["reasoningContent"]
                     reasoning_text = reasoning.get("reasoningText", {})
                     if isinstance(reasoning_text, dict):
-                        total += self.count_text(reasoning_text.get("text", ""))
+                        total += self.count_text(
+                            coerce_countable_text(reasoning_text.get("text", ""))
+                        )
                     elif isinstance(reasoning_text, str):
                         total += self.count_text(reasoning_text)
                 elif not part_type and "document" in part:
@@ -358,7 +361,7 @@ class BaseTokenizer(ABC):
                     # ~4 bytes/token (len * 3/4 / 4), which lands that session
                     # near the provider figure and never prices an omitted
                     # block at zero.
-                    total += self.count_text(part.get("thinking", "") or "")
+                    total += self.count_text(coerce_countable_text(part.get("thinking", "")))
                     total += len(part.get("signature") or "") * 3 // 16
                 else:
                     # Unknown type - estimate from JSON
