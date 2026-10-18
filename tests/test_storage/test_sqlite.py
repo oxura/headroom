@@ -793,3 +793,28 @@ class TestConcurrency:
         count = storage.count()
         assert count == 50  # 5 threads * 10 records each
         storage.close()
+
+
+@pytest.mark.parametrize("filename", [":memory:", ""])
+def test_volatile_database_keeps_records_until_close(filename, sample_request_metrics):
+    storage = SQLiteStorage(filename)
+    try:
+        storage.save(sample_request_metrics)
+        restored = storage.get(sample_request_metrics.request_id)
+        assert restored is not None
+        assert (
+            restored.request_id,
+            restored.tokens_input_before,
+            restored.tokens_input_after,
+        ) == (
+            sample_request_metrics.request_id,
+            sample_request_metrics.tokens_input_before,
+            sample_request_metrics.tokens_input_after,
+        )
+        assert [row.request_id for row in storage.query()] == [sample_request_metrics.request_id]
+        storage.close()
+        assert storage.get(sample_request_metrics.request_id) is None
+        storage.save(sample_request_metrics)
+        assert storage.count() == 1
+    finally:
+        storage.close()

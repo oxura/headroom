@@ -22,7 +22,8 @@ class SQLiteStorage(Storage):
         Initialize SQLite storage.
 
         Args:
-            db_path: Path to SQLite database file.
+            db_path: SQLite database filename. ":memory:" and "" create volatile
+                databases whose records last until the connection closes.
         """
         self.db_path = db_path
         self._ensure_db_exists()
@@ -35,6 +36,14 @@ class SQLiteStorage(Storage):
 
         conn = sqlite3.connect(self.db_path)
         try:
+            self._initialize_schema(conn)
+
+        finally:
+            conn.close()
+
+    def _initialize_schema(self, conn: sqlite3.Connection) -> None:
+        """Initialize the database belonging to this connection."""
+        with conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS requests (
@@ -70,15 +79,17 @@ class SQLiteStorage(Storage):
                 CREATE INDEX IF NOT EXISTS idx_mode ON requests(mode)
             """)
 
-            conn.commit()
-        finally:
-            conn.close()
-
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create connection."""
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
-            self._conn.row_factory = sqlite3.Row
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                self._initialize_schema(conn)
+            except BaseException:
+                conn.close()
+                raise
+            self._conn = conn
         return self._conn
 
     def save(self, metrics: RequestMetrics) -> None:
