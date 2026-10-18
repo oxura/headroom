@@ -36,6 +36,10 @@ OPENAI_BASE_URL=http://localhost:8787/v1 your-app
 
 `headroom wrap copilot` uses Copilot CLI's BYOK provider settings under the hood. In `provider-type=auto`, it chooses Headroom's Anthropic route for the default proxy backend and the OpenAI-compatible `/v1` route for translated backends such as `anyllm` and LiteLLM.
 
+For translated OpenAI streaming requests, token accounting uses the latest
+provider usage snapshot. Partial usage frames retain earlier fields they omit;
+an explicitly reported zero replaces the earlier count.
+
 Anonymous aggregate telemetry is **off by default** (opt-in). Opt in with `HEADROOM_TELEMETRY=on` or `headroom proxy --telemetry`. Downstream apps can set `HEADROOM_SDK=headroom-app` to override the anonymous telemetry `sdk` label; the default remains `proxy`.
 
 Operational OTEL metrics are configured separately and are **off by default**. Install `headroom-ai[proxy,otel]` and set:
