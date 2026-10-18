@@ -145,7 +145,11 @@ class RateLimitState:
 
 @dataclass
 class ProxyConfig:
-    """Proxy configuration."""
+    """Proxy configuration.
+
+    With response caching enabled, OpenAI audio responses are keyed by the full
+    audio configuration, including voice and output format.
+    """
 
     # Server
     host: str = "127.0.0.1"
