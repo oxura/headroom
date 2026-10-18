@@ -368,6 +368,10 @@ class HuggingFaceTokenizer(BaseTokenizer):
     Some models may require authentication:
         huggingface-cli login
 
+    With a usable chat template, count_message excludes the assistant generation
+    prompt; count_messages includes it. No fixed reply-token subtraction applies
+    to template-based single-message counts.
+
     Example:
         counter = HuggingFaceTokenizer("llama-3-8b")
         tokens = counter.count_text("Hello, world!")
@@ -421,6 +425,22 @@ class HuggingFaceTokenizer(BaseTokenizer):
             return max(1, int(len(text) / 4 + 0.5))
         tokens = self.tokenizer.encode(text, add_special_tokens=False)
         return len(tokens)
+
+    def count_message(self, message: dict[str, Any]) -> int:
+        """Count one serialized message without an assistant generation prompt."""
+        if not self._use_fallback() and hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                formatted = self.tokenizer.apply_chat_template(
+                    [message],
+                    tokenize=True,
+                    add_generation_prompt=False,
+                    return_dict=False,
+                )
+                return len(formatted)
+            except Exception:
+                # Match count_messages when the model has no usable chat template.
+                pass
+        return super().count_messages([message]) - self.REPLY_OVERHEAD
 
     def count_messages(self, messages: list[dict[str, Any]]) -> int:
         """Count tokens in chat messages.
