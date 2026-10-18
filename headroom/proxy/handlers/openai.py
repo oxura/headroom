@@ -3561,8 +3561,11 @@ class OpenAIHandlerMixin:
         )
         # Check cache
         if self.cache and not stream and cache_partition is not None:
+            # Hooks and extensions can mutate nested request containers in place.
+            cache_lookup_messages = copy.deepcopy(messages)
+            cache_key_fields = copy.deepcopy(cache_key_fields)
             cached = await self.cache.get(
-                messages, model, partition=cache_partition, **cache_key_fields
+                cache_lookup_messages, model, partition=cache_partition, **cache_key_fields
             )
             if cached:
                 self.pipeline_extensions.emit(

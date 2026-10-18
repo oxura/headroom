@@ -91,6 +91,9 @@ class CompressionHooks:
         - Pre-filtering (remove messages irrelevant to the user's query)
         - Phase detection (reorder/prioritize based on task phase)
 
+        The hook may edit messages in place or return a new list. The proxy's
+        response cache keeps its pre-hook request snapshot for lookup and storage.
+
         Args:
             messages: The full message list (will be compressed next).
             ctx: Compression context (model, query, turn, tool calls).
