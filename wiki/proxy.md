@@ -80,6 +80,12 @@ When configured, Headroom emits OTLP traces for the shared compression pipeline 
 | `--anthropic-extra-headers` | unset | JSON object of extra headers merged into (and overriding) forwarded Anthropic requests, e.g. `'{"Api-Key": "..."}'` |
 | `--openai-extra-headers` | unset | JSON object of extra headers merged into (and overriding) forwarded OpenAI requests |
 
+Under normal content routing, fenced source code stays on the code-aware path.
+If that compressor is disabled, unavailable, or leaves the block unchanged,
+the code is preserved rather than sent to prose ML compression. The same rule
+applies to source-code sections inside mixed tool results and to
+lossless-then-lossy mode.
+
 ### Run Modes
 
 Headroom proxy has two explicit run modes:
