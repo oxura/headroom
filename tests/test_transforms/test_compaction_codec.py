@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from headroom.transforms.compaction_codec import (
     contains_removal_marker,
     expand_compacted,
@@ -156,6 +158,33 @@ def test_value_factoring_handles_comma_and_quote_values() -> None:
     factored = factor_values(_crush(records))
     assert "__dict:" in factored
     assert expand_compacted(factored) == records
+
+
+@pytest.mark.parametrize("legend", ["not-an-array", {"0": "value"}, 42, True, None])
+def test_non_array_dictionary_legend_is_unreversible(legend: object) -> None:
+    block = f"[1]{{tag:string}} __dict:1\n@tag={json.dumps(legend)}\n0\n"
+
+    assert expand_compacted(block) is None
+
+
+@pytest.mark.parametrize("index", [-1, 2])
+def test_out_of_bounds_dictionary_reference_is_unreversible(index: int) -> None:
+    block = f'[1]{{tag:string}} __dict:1\n@tag=["first","last"]\n{index}\n'
+
+    assert expand_compacted(block) is None
+
+
+def test_dictionary_boundaries_and_literal_cells_remain_distinct() -> None:
+    block = '[6]{tag:string?} __dict:1\n@tag=["first","last"]\n0\n1\n"-1"\nnull\n""\n\n'
+
+    assert expand_compacted(block) == [
+        {"tag": "first"},
+        {"tag": "last"},
+        {"tag": "-1"},
+        {"tag": None},
+        {"tag": ""},
+        {},
+    ]
 
 
 def test_single_column_missing_row_is_not_dropped() -> None:

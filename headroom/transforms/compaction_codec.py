@@ -364,6 +364,8 @@ def expand_compacted(text: str) -> list[dict[str, Any]] | None:
     Returns the list of dicts, or ``None`` if ``text`` is not a parseable
     densified block or carries an irreversible removal marker (CCR / dropped
     rows) — callers treat ``None`` as "cannot losslessly reverse".
+    Dictionary legends must be arrays and references must be nonnegative,
+    in-range indices; malformed dictionaries also return ``None``.
     """
     if not is_compacted(text) or contains_removal_marker(text):
         return None
@@ -383,9 +385,12 @@ def expand_compacted(text: str) -> list[dict[str, Any]] | None:
         if not eq or not name.startswith("@"):
             return None
         try:
-            legends[name[1:]] = json.loads(payload)
+            legend = json.loads(payload)
         except (ValueError, TypeError):
             return None
+        if not isinstance(legend, list):
+            return None
+        legends[name[1:]] = legend
 
     out: list[dict[str, Any]] = []
     for cells in _split_data_rows(rest, declared):
@@ -404,7 +409,10 @@ def expand_compacted(text: str) -> list[dict[str, Any]] | None:
                     _assign(record, col.path, None)
                     continue
                 try:
-                    _assign(record, col.path, legends[col.name][int(value)])
+                    index = int(value)
+                    if index < 0:
+                        return None
+                    _assign(record, col.path, legends[col.name][index])
                 except (ValueError, IndexError):
                     return None
                 continue
