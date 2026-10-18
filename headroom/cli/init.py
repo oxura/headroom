@@ -140,11 +140,12 @@ def _enable_verbose_logging() -> None:
 
 
 def _local_profile(cwd: Path | None = None) -> str:
+    """Derive the local profile from the resolved native filesystem identity."""
     root = (cwd or Path.cwd()).resolve()
     slug = "".join(
         ch if (ch.isascii() and ch.isalnum()) or ch in "-._" else "-" for ch in root.name.lower()
     ).strip("-")
-    digest = sha1(str(root).encode("utf-8")).hexdigest()[:8]
+    digest = sha1(os.fsencode(root)).hexdigest()[:8]
     return validate_profile_name(f"init-{slug or 'repo'}-{digest}")
 
 

@@ -1855,3 +1855,20 @@ def test_ensure_profile_running_logs_a_recovery_that_never_becomes_ready(
         "headroom: could not start persistent proxy 'task-profile': it did not become ready "
         "within 45s. Check it with `headroom install status --profile task-profile`."
     ]
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="Non-UTF8 byte filenames are a POSIX filesystem feature"
+)
+def test_local_profiles_distinguish_native_non_utf8_directories(monkeypatch, tmp_path):
+    init_cli, _ = _load_init_module(monkeypatch)
+    roots = []
+    for suffix in (b"\xff", b"\xfe"):
+        raw = os.fsencode(tmp_path) + b"/project-" + suffix
+        os.mkdir(raw)
+        roots.append(Path(os.fsdecode(raw)))
+    first = init_cli._local_profile(roots[0])
+    second = init_cli._local_profile(roots[1])
+    assert PROFILE_RE.fullmatch(first)
+    assert PROFILE_RE.fullmatch(second)
+    assert first != second
