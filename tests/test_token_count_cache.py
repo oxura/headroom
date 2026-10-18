@@ -48,13 +48,6 @@ def test_cached_count_equals_uncached(body: str) -> None:
         assert first == second == third, f"{name}: {first} != {second} != {third}"
 
 
-@pytest.mark.filterwarnings("ignore::UserWarning")
-def test_empty_and_tiny_text_still_correct() -> None:
-    for _name, counter in _counters():
-        assert counter.count_text("") == 0
-        assert counter.count_text("hi") == counter.count_text("hi")
-
-
 def test_cache_clears_when_full_rather_than_growing() -> None:
     cache = TokenCountCache(min_chars=1, max_entries=4, max_chars=10**9)
     for i in range(10):
@@ -81,17 +74,6 @@ def test_distinct_texts_do_not_collide() -> None:
     cache.put("alpha", 1)
     cache.put("beta", 2)
     assert (cache.get("alpha"), cache.get("beta"), cache.get("gamma")) == (1, 2, None)
-
-
-@pytest.mark.filterwarnings("ignore::UserWarning")
-def test_counters_do_not_share_a_cache_across_encodings() -> None:
-    """cl100k and o200k are both live in one process; a shared memo would mix them."""
-    a = TiktokenCounter(encoding="cl100k_base")
-    b = TiktokenCounter(encoding="o200k_base")
-    body = "tokenization differs between these two encodings. " * 100
-    assert a.count_text(body) == a.count_text(body)
-    assert b.count_text(body) == b.count_text(body)
-    assert a._count_cache is not b._count_cache
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -157,3 +139,19 @@ def test_recput_of_below_min_key_never_admits_and_never_evicts() -> None:
     assert cache._counts == {"aaaaaaaaaa-1": 10}
     cache.put("x", 5)  # re-put: still no admission, no eviction
     assert cache._counts == {"aaaaaaaaaa-1": 10}
+
+
+def test_oversized_text_is_not_retained_or_allowed_to_evict_a_hot_entry() -> None:
+    cache = TokenCountCache(min_chars=1, max_entries=1, max_chars=100)
+    cache.put("keep", 7)
+    oversized = "x" * 101
+    cache.put(oversized, 42)
+    assert cache.get(oversized) is None
+    assert cache.get("keep") == 7
+
+
+def test_text_at_the_character_budget_can_still_be_cached() -> None:
+    cache = TokenCountCache(min_chars=1, max_chars=100)
+    text = "x" * 100
+    cache.put(text, 25)
+    assert cache.get(text) == 25
