@@ -44,6 +44,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ..log_safety import describe_exception, safe_id
+from ..parser import CCR_RETRIEVAL_MARKER_RE
 
 if TYPE_CHECKING:
     from ..memory.tracker import ComponentStats
@@ -306,7 +307,8 @@ class CompressionStore:
         """Store compressed content and return hash for retrieval.
 
         Args:
-            original: Original JSON content before compression.
+            original: Original content before compression. Inline CCR markers
+                are preserved; only a bare compact marker is refused.
             compressed: Compressed JSON content.
             original_tokens: Token count of original content.
             compressed_tokens: Token count of compressed content.
@@ -377,7 +379,11 @@ class CompressionStore:
         # OAuth token), and an error path is exactly where that sort of leak
         # survives review. `hash_key` already identifies the entry.
         stripped = original.strip()
-        if stripped.startswith("<<ccr:") and stripped.endswith(">>") and "\n" not in stripped:
+        if (
+            stripped.startswith("<<ccr:")
+            and "\n" not in stripped
+            and CCR_RETRIEVAL_MARKER_RE.fullmatch(stripped)
+        ):
             logger.error(
                 "CCR store: refusing to persist a bare retrieval marker as "
                 "original_content (hash=%s tool=%s strategy=%s len=%d) — the "

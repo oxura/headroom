@@ -359,3 +359,28 @@ class TestCCREdgeCases:
             t.join()
 
         assert errors == [], f"Errors during concurrent operations: {errors}"
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "<<ccr:abcd>> Keep this instruction <<ccr:ef01>>",
+        "<<ccr:abcd>><<ccr:ef01>>",
+        "<<ccr:abcd>> literal suffix >>",
+    ],
+)
+def test_original_containing_inline_markers_remains_retrievable(original):
+    store = CompressionStore(enable_feedback=False)
+    key = store.store(original, "short")
+    entry = store.retrieve(key)
+    assert entry is not None
+    assert entry.original_content == original
+
+
+def test_bare_marker_cannot_overwrite_the_recoverable_original():
+    store = CompressionStore(enable_feedback=False)
+    key = store.store("original tool output", "short")
+    store.store("<<ccr:abcd,base64,2.0KB>>", "short", explicit_hash=key)
+    entry = store.retrieve(key)
+    assert entry is not None
+    assert entry.original_content == "original tool output"
