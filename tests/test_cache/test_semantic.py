@@ -121,6 +121,31 @@ class TestSemanticCache:
         got2 = cache.get("query2", messages_hash="h2")
         assert got2 is not None and got2.response == "response2b"
 
+    def test_embedding_failure_does_not_evict_a_live_response(self):
+        def embedding(query):
+            if query == "broken query":
+                raise RuntimeError("embedding service unavailable")
+            return [1.0, 0.0] if query == "old query" else [0.0, 1.0]
+
+        cache = SemanticCache(SemanticCacheConfig(max_entries=1), embedding_fn=embedding)
+        cache.put("old query", "old response", messages_hash="old")
+
+        with pytest.raises(RuntimeError):
+            cache.put("broken query", "unstored response", messages_hash="broken")
+
+        previous = cache.get("old query", messages_hash="old")
+        assert previous is not None
+        assert previous.response == "old response"
+        assert cache.get_stats()["evictions"] == 0
+
+        cache.put("replacement query", "replacement response", messages_hash="replacement")
+
+        assert cache.get("old query", messages_hash="old") is None
+        replacement = cache.get("replacement query", messages_hash="replacement")
+        assert replacement is not None
+        assert replacement.response == "replacement response"
+        assert cache.get_stats()["evictions"] == 1
+
     def test_ttl_expiration(self):
         """Test TTL expiration."""
         config = SemanticCacheConfig(ttl_seconds=1)
