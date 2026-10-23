@@ -49,6 +49,10 @@ headroom proxy --port 8787
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
+#### Fail-open behavior
+
+In the proxy, an image worker timeout, crash, or cancellation caused by a shared-pool reset forwards the original image payload. Cancellation of the client request itself still propagates.
+
 ### With HeadroomClient
 
 ```python

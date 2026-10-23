@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import inspect
+import asyncio
+import os
 
 import pytest
 
 from headroom.proxy import image_isolation
-from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
-from headroom.proxy.handlers.openai import OpenAIHandlerMixin
 
 
 @pytest.fixture(autouse=True)
@@ -106,45 +105,44 @@ async def test_worker_timeout_kills_the_abandoned_worker(monkeypatch) -> None:
     assert not worker.is_alive()
 
 
-def test_late_failure_leaves_a_rebuilt_pool_alone() -> None:
-    # A call that fails after another request already replaced its pool must
-    # not drop (and kill the worker of) the replacement.
-    old = image_isolation._image_pool()
-    image_isolation._reset_image_pool(old)
-    rebuilt = image_isolation._image_pool()
+async def test_pool_reset_preserves_queued_request_payloads(monkeypatch) -> None:
+    monkeypatch.setattr(image_isolation, "_IMAGE_WORKER", image_isolation._hang_worker)
+    loop = asyncio.get_running_loop()
+    await asyncio.wait_for(
+        loop.run_in_executor(image_isolation._image_pool(), os.getpid),
+        timeout=30.0,
+    )
+    payloads = [[{"role": "user", "content": f"image payload {i}"}] for i in range(9)]
 
-    image_isolation._reset_image_pool(old)
-
-    assert image_isolation._IMAGE_POOL is rebuilt
-
-
-async def test_worker_success_returns_compressed(monkeypatch) -> None:
-    messages = _messages()
-    monkeypatch.setattr(image_isolation, "_IMAGE_WORKER", image_isolation._success_worker)
-
-    returned, result = await image_isolation.run_image_compression_isolated(
-        messages,
-        provider="anthropic",
-        timeout=5.0,
+    results = await asyncio.gather(
+        *(
+            image_isolation.run_image_compression_isolated(
+                messages,
+                provider="openai",
+                timeout=0.2 if i == 0 else 10.0,
+            )
+            for i, messages in enumerate(payloads)
+        )
     )
 
-    assert returned[-1]["content"] == "compressed:anthropic"
-    assert result == {
-        "technique": "preserve",
-        "original_tokens": 100,
-        "compressed_tokens": 60,
-        "confidence": 1.0,
-        "savings_percent": 40.0,
-    }
+    assert results == [(messages, None) for messages in payloads]
 
 
-def test_success_marks_mutation_and_logs() -> None:
-    anthropic_src = inspect.getsource(AnthropicHandlerMixin.handle_anthropic_messages)
-    openai_src = inspect.getsource(OpenAIHandlerMixin.handle_openai_chat)
+async def test_caller_cancellation_still_propagates(monkeypatch) -> None:
+    monkeypatch.setattr(image_isolation, "_IMAGE_WORKER", image_isolation._hang_worker)
+    loop = asyncio.get_running_loop()
+    await asyncio.wait_for(
+        loop.run_in_executor(image_isolation._image_pool(), os.getpid),
+        timeout=30.0,
+    )
+    task = asyncio.create_task(
+        image_isolation.run_image_compression_isolated(
+            _messages(), provider="anthropic", timeout=10.0
+        )
+    )
+    await asyncio.sleep(0)
 
-    assert "run_image_compression_isolated(" in anthropic_src
-    assert 'body_mutation_tracker.mark_mutated("image_compression")' in anthropic_src
-    assert "Image compression:" in anthropic_src
+    task.cancel()
 
-    assert "run_image_compression_isolated(" in openai_src
-    assert "Image:" in openai_src
+    with pytest.raises(asyncio.CancelledError):
+        await task

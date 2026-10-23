@@ -162,7 +162,18 @@ async def run_image_compression_isolated(
         deadline = time.time() + timeout * _OCR_BUDGET_FRACTION
         pool = _image_pool()
         future = loop.run_in_executor(pool, _IMAGE_WORKER, messages, provider, deadline)
-        return await asyncio.wait_for(future, timeout=timeout)
+        try:
+            # A cancelled worker future is not cancellation of this request.
+            completed, _ = await asyncio.wait((future,), timeout=timeout)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+        if not completed:
+            future.cancel()
+            raise TimeoutError
+        if future.cancelled():
+            return messages, None
+        return future.result()
     except BrokenProcessPool:
         logger.warning("Image compression worker crashed; forwarding original image payload")
         _reset_image_pool(pool)
