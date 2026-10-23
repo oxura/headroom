@@ -68,6 +68,7 @@ def _install_memory_handler(proxy: object) -> None:
     """Wire a deterministic in-process memory handler that returns 'MEMCTX'."""
     proxy.memory_handler = SimpleNamespace(  # type: ignore[attr-defined]
         config=SimpleNamespace(inject_context=True, inject_tools=False),
+        scope_allows_injection=lambda request_context: True,
         search_and_format_context=AsyncMock(return_value="MEMCTX"),
         has_memory_tool_calls=lambda resp, provider: False,
     )

@@ -32,6 +32,9 @@ class _MemoryHandler:
         self.backend = None
         self.executed: list[str] = []
 
+    def scope_allows_injection(self, request_context: Any) -> bool:
+        return True
+
     def compute_memory_tool_definitions(self, provider: str) -> list[dict[str, Any]]:
         return [
             {"name": name, "description": name, "input_schema": {"type": "object"}}

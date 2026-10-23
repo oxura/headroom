@@ -438,6 +438,7 @@ def test_memory_context_avoids_system_mutation_when_prefix_frozen() -> None:
 
         proxy.memory_handler = SimpleNamespace(
             config=SimpleNamespace(inject_context=True, inject_tools=False),
+            scope_allows_injection=lambda request_context: True,
             search_and_format_context=AsyncMock(return_value="MEMCTX"),
             has_memory_tool_calls=lambda resp, provider: False,
         )

@@ -8,8 +8,8 @@ a request.
 Three storage modes:
 
 * ``PROJECT`` (default): one DB per resolved project. The project is
-  identified from request headers (explicit) or by parsing a Claude
-  Code / Codex ``<env>`` block for the working directory.
+  identified from explicit request signals or client working-directory
+  context, including Claude Code / Codex ``<env>`` and pi ``<cwd>`` blocks.
 * ``USER``: one DB per ``x-headroom-user-id`` (no project axis).
 * ``GLOBAL``: a single DB shared across everything. Matches the pre-fix
   behaviour and is preserved so users can still reach memories written
@@ -183,7 +183,7 @@ class ProjectResolver:
             if ident is not None:
                 return ident
 
-        # Tier 4: parse the system prompt for a ``<env>`` cwd line.
+        # Tier 4: parse client working-directory context from the system prompt.
         sys_cwd = self._extract_cwd_from_system_prompt(ctx.system_prompt)
         if sys_cwd:
             ident = self._identity_from_cwd(sys_cwd)
@@ -207,11 +207,19 @@ class ProjectResolver:
         return None
 
     @classmethod
-    def _extract_cwd_from_system_prompt(cls, system_prompt: str) -> str | None:
+    def _extract_cwd_from_system_prompt(
+        cls, system_prompt: str, *, allow_cwd_block: bool = True
+    ) -> str | None:
         if not system_prompt:
             return None
+        block_start = system_prompt.find("<cwd>")
+        block_end = (
+            system_prompt.find("</cwd>", block_start + len("<cwd>")) if block_start >= 0 else -1
+        )
         for prefix in _CWD_PREFIXES:
             idx = system_prompt.find(prefix)
+            if block_start >= 0 and block_start <= idx < block_end:
+                idx = system_prompt.find(prefix, block_end + len("</cwd>"))
             if idx < 0:
                 continue
             start = idx + len(prefix)
@@ -220,6 +228,8 @@ class ProjectResolver:
             chunk = chunk.strip()
             if chunk:
                 return chunk
+        if allow_cwd_block and block_end >= 0:
+            return system_prompt[block_start + len("<cwd>") : block_end].strip() or None
         return None
 
     @classmethod
@@ -472,9 +482,9 @@ def _first_user_text_with_cwd(messages: list[Any]) -> str:
 
     Claude Code 2.x sends its ``<env>`` block as an ``isMeta`` *user*
     message rather than inside ``system`` (#3595), and Trae puts it in a
-    user reminder (#1737). Only text that actually contains one of
-    ``_CWD_PREFIXES`` is returned, so ordinary user content never leaks
-    into the system prompt.
+    user reminder (#1737). Only usable legacy cwd lines enable this
+    fallback; pi cwd blocks are recognized in system context, not
+    ordinary user text.
     """
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "user":
@@ -482,7 +492,11 @@ def _first_user_text_with_cwd(messages: list[Any]) -> str:
         content = msg.get("content")
         user_text = content if isinstance(content, str) else _text_from_blocks(content)
         if user_text and any(prefix in user_text for prefix in _CWD_PREFIXES):
-            return user_text
+            return (
+                user_text
+                if ProjectResolver._extract_cwd_from_system_prompt(user_text, allow_cwd_block=False)
+                else ""
+            )
     return ""
 
 
@@ -520,7 +534,9 @@ def extract_system_prompt(body: Mapping[str, Any]) -> str:
         # redirect this request at another project's memory store by pasting
         # its own ``cwd:`` line.
         trusted = "\n".join(parts)
-        if not any(prefix in trusted for prefix in _CWD_PREFIXES):
+        if not any(prefix in trusted for prefix in _CWD_PREFIXES) and (
+            ProjectResolver._extract_cwd_from_system_prompt(trusted) is None
+        ):
             cwd_text = _first_user_text_with_cwd(messages)
             if cwd_text:
                 parts.append(cwd_text)

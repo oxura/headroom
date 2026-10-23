@@ -40,6 +40,7 @@ from headroom.memory.storage_router import (
     BackendRouter,
     BackendRouterConfig,
     MemoryStorageMode,
+    ProjectResolver,
     RequestContext,
     ResolvedScope,
 )
@@ -677,6 +678,18 @@ class MemoryHandler:
             else f"{base_user_id}::{scope.project_key}"
         )
         return self._backend, scope, composed
+
+    def scope_allows_injection(self, request_context: RequestContext | None) -> bool:
+        """Check local routing without initializing a backend or opening a database."""
+        if request_context is None or self.config.backend != "local":
+            return True
+        if self._router is not None:
+            scope = self._router._resolve_scope(request_context)
+            return scope.mode is not MemoryStorageMode.PROJECT or scope.project_key is not None
+        return (
+            self.config.storage_mode is not MemoryStorageMode.PROJECT
+            or ProjectResolver().resolve(request_context) is not None
+        )
 
     @staticmethod
     def _unresolved_project_error(scope: ResolvedScope | None) -> str | None:
